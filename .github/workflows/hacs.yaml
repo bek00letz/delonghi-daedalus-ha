@@ -22,3 +22,6 @@ jobs:
       - uses: hacs/action@22.5.0
         with:
           category: integration
+          # `brands` ignored until delonghi_daedalus is registered in
+          # home-assistant/brands. Pre-alpha repo, deferred.
+          ignore: brands

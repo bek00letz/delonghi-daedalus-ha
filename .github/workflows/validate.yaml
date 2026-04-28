@@ -1,0 +1,43 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  json:
+    name: JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Validate JSON translations + manifest
+        run: |
+          python -c "
+          import json, glob, sys
+          errors = []
+          paths = sorted(
+              glob.glob('custom_components/*/translations/*.json')
+              + glob.glob('custom_components/*/manifest.json')
+              + ['hacs.json']
+          )
+          for f in paths:
+              try:
+                  json.load(open(f))
+                  print(f'OK  {f}')
+              except json.JSONDecodeError as e:
+                  errors.append(f'{f}: {e}')
+                  print(f'FAIL {f}: {e}')
+          sys.exit(1 if errors else 0)
+          "

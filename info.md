@@ -1,0 +1,15 @@
+# De'Longhi My Coffee Lounge (Daedalus)
+
+⚠️ **Pre-alpha** — auth + LAN handshake work, brewing not yet decoded. Use only
+if you can help capture an MITM trace of the official app, otherwise install
+the upstream [`delonghi-ha`](https://github.com/sk7n4k3d/delonghi-ha) for the
+older Coffee Link stack.
+
+For the **Eletta Ultra** and other modern machines on the **My Coffee Lounge**
+app (package `com.delonghigroup.daedalus`).
+
+Setup needs your account email + password, the machine's LAN IP, and the SN
+printed on the unit. Region auto-probes (EU / EU_US / CH).
+
+Source of truth: [`delonghi-ha`](https://github.com/sk7n4k3d/delonghi-ha)
+upstream. This repo is a HACS packaging mirror.

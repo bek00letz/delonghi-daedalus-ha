@@ -1,0 +1,53 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "De'Longhi My Coffee Lounge",
+        "description": "Enter your My Coffee Lounge credentials and the LAN address of your Eletta Ultra (Daedalus).",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "host": "Machine IP on LAN",
+          "serial_number": "Machine serial number",
+          "pool": "Account region (Gigya pool) — the integration auto-probes all regions, leave on EU unless you know otherwise"
+        }
+      },
+      "reauth_confirm": {
+        "title": "De'Longhi My Coffee Lounge — Reauthentication required",
+        "description": "The stored session for {email} was rejected by Gigya. Enter your password again to renew it; the rest of the configuration (machine IP, serial number, region) stays as-is.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid My Coffee Lounge credentials",
+      "all_pools_unauthorized": "Login failed on all account regions (EU, EU_US, CH). Your account may have been created via the in-app registration page (OAuth2/OIDC), which uses a different authentication path than direct login. Check that your password is correct, then open an issue on the integration's GitHub repository for further investigation.",
+      "cannot_connect": "Cannot reach the machine on the LAN",
+      "invalid_host": "Invalid IP / hostname",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This machine is already configured",
+      "reauth_successful": "Reauthentication successful"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connected": {
+        "name": "Connected"
+      }
+    },
+    "sensor": {
+      "connection_id": {
+        "name": "LAN connection ID"
+      },
+      "serial_number": {
+        "name": "Serial number"
+      },
+      "lan_ip": {
+        "name": "LAN IP address"
+      }
+    }
+  }
+}

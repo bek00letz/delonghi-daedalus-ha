@@ -55,6 +55,28 @@ class DaedalusStore:
             self._save()
 
     @property
+    def gigya_session(self) -> tuple[str, str] | None:
+        """The saved De'Longhi sign-in session (token, secret); never the password."""
+        value = self._data.get("session")
+        return (value[0], value[1]) if isinstance(value, list) and len(value) == 2 else None
+
+    @callback
+    def set_gigya_session(self, session: tuple[str, str]) -> None:
+        self._data["session"] = list(session)
+        self._save()
+
+    @property
+    def filter(self) -> dict:
+        """Last filter reading and when a change was last seen: {count, usage, changed}."""
+        return dict(self._data.get("filter", {}))
+
+    @callback
+    def set_filter(self, value: dict) -> None:
+        if self._data.get("filter") != value:
+            self._data["filter"] = value
+            self._save()
+
+    @property
     def profiles(self) -> list[int]:
         """Profiles this machine has been seen using."""
         return list(self._data.get("profiles", []))
@@ -80,9 +102,8 @@ class DaedalusStore:
             self._data["machine_cert_sha256"] = fingerprint.hex()
         self._save()
 
-    async def async_forget_machine(self) -> None:
-        """Forget the trusted certificate and save at once, before a reload."""
-        self._data.pop("machine_cert_sha256", None)
+    async def async_save_now(self) -> None:
+        """Write any pending change at once, e.g. before the integration reloads."""
         await self._store.async_save(dict(self._data))
 
     async def async_remove(self) -> None:

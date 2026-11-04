@@ -1,21 +1,22 @@
-"""Find the coffee machine on the home network.
+"""Find the coffee machine on the home network, without giving anything away.
 
 The machine doesn't announce itself (no mDNS), so this looks at every address
-on the given networks for a TLS server on port 443:
+on the given networks for a TLS server on port 443. Nothing here ever sends
+the account token to a device that hasn't been confirmed:
 
-- If the machine's certificate fingerprint is already known, a matching
-  certificate is enough. No token is sent anywhere during the search.
-- Otherwise only servers whose certificate is named like the machine's
-  ("AWS IoT Certificate") are tried, and one counts as found only when it
-  accepts the account token for this serial number, which only the right
-  machine does. The token goes only to the exact server whose certificate
-  was just seen.
+- ``async_find_candidates`` collects servers whose certificate is named like
+  the machine's ("AWS IoT Certificate"). That name can be copied, so these
+  are only candidates for the person to confirm.
+- ``async_accepts_token`` checks the ONE device the person confirmed, pinned
+  to the exact certificate just seen.
+- ``async_find_machine`` re-finds a machine that is already trusted, by its
+  certificate fingerprint alone (e.g. after the router gave it a new address).
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 import hashlib
 import ipaddress
 import json
@@ -31,9 +32,16 @@ from ..const import DEFAULT_WS_PATH, DEFAULT_WS_PORT, MESSAGE_AUTH, RESPONSE_OK
 _LOGGER = logging.getLogger(__name__)
 
 MACHINE_CERT_NAME = "AWS IoT Certificate"
-PROBE_TIMEOUT = 2.0
-AUTH_TIMEOUT = 5.0
-CONCURRENCY = 128
+# Two passes, because the machine's Wi-Fi chip is slow to finish a TLS
+# handshake when the network is busy (seen 2026-11-04: a 2 s handshake limit
+# with many probes in flight missed it): first a cheap check of which
+# addresses accept a connection on the port, then a patient TLS handshake
+# with only those few.
+CONNECT_TIMEOUT = 1.5
+CONNECT_CONCURRENCY = 64
+PROBE_TIMEOUT = 6.0
+PROBE_CONCURRENCY = 4
+AUTH_TIMEOUT = 8.0
 # Never scan more than this many addresses on one network (a /22).
 MAX_HOSTS_PER_NETWORK = 1022
 
@@ -65,23 +73,39 @@ def _trust_any_context() -> ssl.SSLContext:
     return ctx
 
 
-async def async_probe_certificate(host: str, port: int = DEFAULT_WS_PORT) -> bytes | None:
-    """The DER certificate of a TLS server at host:port, or None if there isn't one."""
+async def _close(writer: asyncio.StreamWriter) -> None:
+    writer.close()
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port, ssl=_trust_any_context()), PROBE_TIMEOUT
-        )
+        await asyncio.wait_for(writer.wait_closed(), 1)
     except (OSError, TimeoutError, ssl.SSLError):
-        return None
+        pass
+
+
+async def _connect(host: str, port: int) -> asyncio.StreamWriter | None:
+    """A plain TCP connection, or None if nothing accepts one quickly."""
     try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), CONNECT_TIMEOUT)
+    except (OSError, TimeoutError):
+        return None
+    return writer
+
+
+async def _certificate_over(writer: asyncio.StreamWriter) -> bytes | None:
+    """Upgrade an open connection to TLS (patiently) and return the server's certificate."""
+    try:
+        await writer.start_tls(_trust_any_context(), ssl_handshake_timeout=PROBE_TIMEOUT)
         ssl_object = writer.get_extra_info("ssl_object")
         return ssl_object.getpeercert(binary_form=True) if ssl_object else None
+    except (OSError, TimeoutError, ssl.SSLError):
+        return None
     finally:
-        writer.close()
-        try:
-            await asyncio.wait_for(writer.wait_closed(), 1)
-        except (OSError, TimeoutError, ssl.SSLError):
-            pass
+        await _close(writer)
+
+
+async def async_probe_certificate(host: str, port: int = DEFAULT_WS_PORT) -> bytes | None:
+    """The DER certificate of a TLS server at host:port, or None if there isn't one."""
+    writer = await _connect(host, port)
+    return await _certificate_over(writer) if writer else None
 
 
 def looks_like_machine(der: bytes) -> bool:
@@ -120,45 +144,58 @@ async def async_accepts_token(
         return False
 
 
-async def async_find_machine(
-    session: aiohttp.ClientSession,
-    hosts: Iterable[str],
-    serial_number: str,
-    *,
-    fingerprint: bytes | None = None,
-    token_provider: Callable[[], Awaitable[str]] | None = None,
-    port: int = DEFAULT_WS_PORT,
-) -> tuple[str, bytes] | None:
-    """Find the machine; return (address, certificate fingerprint), or None.
+async def _probe_all(hosts: list[str], port: int) -> list[tuple[str, bytes]]:
+    """Certificates of the TLS servers among ``hosts``, in the order given.
 
-    With ``fingerprint``, matches on the certificate alone. Without it,
-    ``token_provider`` is needed to confirm a candidate.
+    Pass one opens plain connections to every address, many at once (cheap).
+    Pass two upgrades only the open ones to TLS, a few at a time and patiently,
+    on the same connection, so nothing is dialled twice or cut off mid-way.
     """
-    hosts = list(hosts)
-    limit = asyncio.Semaphore(CONCURRENCY)
+    connect_limit = asyncio.Semaphore(CONNECT_CONCURRENCY)
+    probe_limit = asyncio.Semaphore(PROBE_CONCURRENCY)
 
-    async def probe(host: str) -> tuple[str, bytes] | None:
-        async with limit:
-            der = await async_probe_certificate(host, port)
+    async def connect(host: str) -> asyncio.StreamWriter | None:
+        async with connect_limit:
+            return await _connect(host, port)
+
+    writers = await asyncio.gather(*(connect(h) for h in hosts))
+    open_ = [(host, writer) for host, writer in zip(hosts, writers) if writer]
+
+    async def probe(host: str, writer: asyncio.StreamWriter) -> tuple[str, bytes] | None:
+        async with probe_limit:
+            der = await _certificate_over(writer)
         return (host, der) if der else None
 
-    found = [r for r in await asyncio.gather(*(probe(h) for h in hosts)) if r]
-    _LOGGER.debug("Found %d TLS servers on port %d among %d addresses", len(found), port, len(hosts))
+    found = [r for r in await asyncio.gather(*(probe(h, w) for h, w in open_)) if r]
+    _LOGGER.debug(
+        "%d of %d addresses accept connections on port %d; %d presented a certificate",
+        len(open_), len(hosts), port, len(found),
+    )
+    return found
 
-    if fingerprint is not None:
-        for host, der in found:
-            if hashlib.sha256(der).digest() == fingerprint:
-                return host, fingerprint
-        return None
 
-    if token_provider is None:
-        return None
-    token: str | None = None
-    for host, der in found:
-        if not looks_like_machine(der):
-            continue
-        token = token or await token_provider()
-        candidate = hashlib.sha256(der).digest()
-        if await async_accepts_token(session, host, candidate, serial_number, token, port):
-            return host, candidate
+async def async_find_candidates(
+    hosts: Iterable[str], port: int = DEFAULT_WS_PORT
+) -> list[tuple[str, bytes]]:
+    """Devices that look like a coffee machine: (address, certificate fingerprint).
+
+    Sends nothing but a TLS handshake. The result must be confirmed by the
+    person before the token goes to any of them.
+    """
+    return [
+        (host, hashlib.sha256(der).digest())
+        for host, der in await _probe_all(list(hosts), port)
+        if looks_like_machine(der)
+    ]
+
+
+async def async_find_machine(
+    hosts: Iterable[str],
+    fingerprint: bytes,
+    port: int = DEFAULT_WS_PORT,
+) -> str | None:
+    """The address of the already-trusted machine, matched by certificate alone."""
+    for host, der in await _probe_all(list(hosts), port):
+        if hashlib.sha256(der).digest() == fingerprint:
+            return host
     return None

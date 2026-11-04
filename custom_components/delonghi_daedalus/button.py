@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -63,11 +64,14 @@ class DaedalusBrewButton(DaedalusEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Button is available when machine is powered on and locally connected."""
-        # Unknown power state still allows a try; the machine answers if it can't brew.
-        return self.coordinator.data.is_local_connected and self.coordinator.data.is_on is not False
+        """Only when a drink can safely start (see ``DaedalusCoordinator.can_brew``)."""
+        return super().available and self.coordinator.can_brew
 
     async def async_press(self) -> None:
-        """Trigger brewing the assigned recipe."""
+        """Start the drink, re-checking at the moment of pressing."""
+        if not self.coordinator.can_brew:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="cannot_brew_now"
+            )
         await self.coordinator.async_brew(self._recipe_id)
 

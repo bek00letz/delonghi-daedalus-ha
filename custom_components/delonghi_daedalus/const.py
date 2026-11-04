@@ -11,13 +11,18 @@ MANUFACTURER: Final = "De'Longhi"
 
 # Configuration and Entry Data Keys
 CONF_USERNAME: Final = "username"
-CONF_PASSWORD: Final = "password"
+CONF_PASSWORD: Final = "password"  # only in setups from before v0.7; removed at next start
+# Handed from the setup screens to the integration once, then moved into the
+# private store (storage.py) and deleted from the config entry.
+CONF_SESSION_HANDOFF: Final = "session"
+CONF_TOKEN_HANDOFF: Final = "token"
+CONF_FINGERPRINT_HANDOFF: Final = "machine_cert_sha256"
 CONF_DEVICE_IP: Final = "device_ip"
 CONF_SERIAL_NUMBER: Final = "serial_number"
 CONF_THING_NAME: Final = "thing_name"
 CONF_MODEL: Final = "model"
 CONF_POLL_INTERVAL: Final = "poll_interval"
-CONF_RETRUST_MACHINE: Final = "retrust_machine"
+CONF_CONFIRM_MACHINE: Final = "confirm_machine"
 
 # Default Network Settings
 DEFAULT_WS_PORT: Final = 443
@@ -33,6 +38,9 @@ GIGYA_LOGIN_URL: Final = "https://accounts.eu1.gigya.com/accounts.login"
 GIGYA_JWT_URL: Final = "https://accounts.eu1.gigya.com/accounts.getJWT"
 GIGYA_ACCOUNT_INFO_URL: Final = "https://accounts.eu1.gigya.com/accounts.getAccountInfo"
 GIGYA_JWT_EXPIRATION: Final = 7776000  # 90 days in seconds
+GIGYA_LOGOUT_URL: Final = "https://accounts.eu1.gigya.com/accounts.logout"
+# The sign-in session, as the app requests it: 90 days.
+GIGYA_SESSION_EXPIRATION: Final = 7776000
 
 # AWS Cloud Endpoints
 AWS_GATEWAY_URL: Final = "https://8q8c9xktb0.execute-api.eu-central-1.amazonaws.com/dlg-prod"

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import json
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -19,16 +18,9 @@ from custom_components.delonghi_daedalus.api.models import (
     MachineStatus,
 )
 from custom_components.delonghi_daedalus.api.websocket import DaedalusCommandError
-from custom_components.delonghi_daedalus.const import (
-    CONF_DEVICE_IP,
-    CONF_PASSWORD,
-    CONF_SERIAL_NUMBER,
-    CONF_THING_NAME,
-    CONF_USERNAME,
-    DOMAIN,
-)
+from tests.helpers import SERIAL, StubLocal, entry_data
+from custom_components.delonghi_daedalus.const import DOMAIN
 
-SERIAL = "SN0001234567"
 
 
 def _report(status: str, mode: int, **alarms: bool) -> dict[str, Any]:
@@ -89,46 +81,10 @@ def test_other_messages_are_not_status(message: dict[str, Any]) -> None:
     assert MachineStatus.from_message(message) is None
 
 
-class StubLocal:
-    """Stands in for the local connection so tests can push messages in."""
-
-    def __init__(self, **_: Any) -> None:
-        self.callbacks: list[Callable[[dict[str, Any]], None]] = []
-        self.is_connected = True
-        self.identity_mismatch = False
-        self.async_turn_on = AsyncMock(return_value={"Response": "OK"})
-        self.async_set_settings = AsyncMock(return_value={"Response": "OK"})
-        self.async_brew = AsyncMock(return_value={"Response": "OK"})
-
-    def register_callback(self, cb):
-        self.callbacks.append(cb)
-        return lambda: self.callbacks.remove(cb)
-
-    def push(self, message: dict[str, Any]) -> None:
-        for cb in list(self.callbacks):
-            cb(message)
-
-    async def async_start(self) -> None:
-        return None
-
-    async def async_stop(self) -> None:
-        return None
-
-
 @pytest.fixture
 async def machine(hass: HomeAssistant):
     """Set up the integration with a stubbed cloud and local connection."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=SERIAL,
-        data={
-            CONF_USERNAME: "user@example.com",
-            CONF_PASSWORD: "pw",
-            CONF_SERIAL_NUMBER: SERIAL,
-            CONF_THING_NAME: "thing",
-            CONF_DEVICE_IP: "192.0.2.10",
-        },
-    )
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=SERIAL, data=entry_data())
     entry.add_to_hass(hass)
     stubs: list[StubLocal] = []
 
@@ -138,7 +94,6 @@ async def machine(hass: HomeAssistant):
 
     appliance = DaedalusAppliance("thing", SERIAL, "ECAM47080", "", "ONLINE")
     with (
-        patch("custom_components.delonghi_daedalus.DaedalusCloudClient.async_authenticate"),
         patch(
             "custom_components.delonghi_daedalus.DaedalusCloudClient.async_get_devices",
             return_value=[appliance],
@@ -165,8 +120,8 @@ async def test_status_report_drives_entities(hass: HomeAssistant, machine: StubL
     assert _state(hass, "binary_sensor", "alarm_water_tank_empty").state == "unknown"
     assert _state(hass, "sensor", "status").state == "unknown"
     assert _state(hass, "switch", "power").state == "unknown"
-    # An unknown power state still lets you try to brew; the machine says if it can't.
-    assert _state(hass, "button", "brew_coffee_xl").state != "unavailable"
+    # Unknown state: no drinks until the machine is known to be ready (safety).
+    assert _state(hass, "button", "brew_coffee_xl").state == "unavailable"
 
     machine.push(_report("Standby", 0, Filter=True))
     await hass.async_block_till_done()
@@ -180,6 +135,15 @@ async def test_status_report_drives_entities(hass: HomeAssistant, machine: StubL
     assert _state(hass, "sensor", "status").state == "Ready"
     assert _state(hass, "switch", "power").state == "on"
     assert _state(hass, "binary_sensor", "alarm_water_tank_empty").state == "on"
+
+
+async def test_cup_warmer_switch_is_off_by_default(hass: HomeAssistant, machine: StubLocal) -> None:
+    """Not every model has a warming plate, and the machine doesn't say which do."""
+    registry = er.async_get(hass)
+    entry = registry.async_get(registry.async_get_entity_id("switch", DOMAIN, f"{SERIAL}_cup_warmer"))
+    assert entry is not None and entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+    sound = registry.async_get(registry.async_get_entity_id("switch", DOMAIN, f"{SERIAL}_sound"))
+    assert sound is not None and sound.disabled_by is None
 
 
 async def test_technical_alarms_are_off_by_default(hass: HomeAssistant, machine: StubLocal) -> None:
@@ -289,6 +253,7 @@ async def test_brewing_uses_the_active_profile(
     hass: HomeAssistant, machine: StubLocal, stub_cloud
 ) -> None:
     stub_cloud.instances[0].on_shadow("MachineSettings", SETTINGS_RECORD)
+    machine.push(_report("Idle", 7))
     await hass.async_block_till_done()
     await hass.services.async_call(
         "button", "press", {"entity_id": _state(hass, "button", "brew_coffee_xl").entity_id}, blocking=True
@@ -340,7 +305,59 @@ async def test_brew_profile_choice(hass: HomeAssistant, machine: StubLocal, stub
     await hass.services.async_call(
         "select", "select_option", {"entity_id": profile.entity_id, "option": "3"}, blocking=True
     )
+    machine.push(_report("Idle", 7))
+    await hass.async_block_till_done()
     await hass.services.async_call(
         "button", "press", {"entity_id": _state(hass, "button", "brew_espresso").entity_id}, blocking=True
     )
     machine.async_brew.assert_awaited_once_with(1, 3, None)
+
+
+def _filter_record(count: int, usage: int) -> dict:
+    return {"Editable": {"SetProfile": 2}, "NotEditable": {"FilterTotCnt": count, "FilterUsagePerc": usage}}
+
+
+async def test_filter_change_date_is_recorded_from_the_machine(
+    hass: HomeAssistant, machine: StubLocal, stub_cloud, freezer
+) -> None:
+    cloud = stub_cloud.instances[0]
+    changed = lambda: _state(hass, "sensor", "water_filter_changed").state  # noqa: E731
+
+    # First reading: only a starting point, no made-up date.
+    cloud.on_shadow("MachineSettings", _filter_record(2, 127))
+    await hass.async_block_till_done()
+    assert changed() == "unknown"
+
+    # Normal use doesn't count as a change.
+    cloud.on_shadow("MachineSettings", _filter_record(2, 128))
+    await hass.async_block_till_done()
+    assert changed() == "unknown"
+
+    # A new filter registered on the machine: the count goes up, usage resets.
+    freezer.move_to("2026-11-05 08:30:00+00:00")
+    cloud.on_shadow("MachineSettings", _filter_record(3, 0))
+    await hass.async_block_till_done()
+    assert changed() == "2026-11-05T08:30:00+00:00"
+
+    # A machine that resets the percentage without counting is caught too.
+    cloud.on_shadow("MachineSettings", _filter_record(3, 64))
+    freezer.move_to("2027-01-05 09:00:00+00:00")
+    cloud.on_shadow("MachineSettings", _filter_record(3, 1))
+    await hass.async_block_till_done()
+    assert changed() == "2027-01-05T09:00:00+00:00"
+
+
+async def test_filter_change_date_survives_a_reload(
+    hass: HomeAssistant, machine: StubLocal, stub_cloud, freezer
+) -> None:
+    freezer.move_to("2026-11-05 08:30:00+00:00")
+    cloud = stub_cloud.instances[0]
+    cloud.on_shadow("MachineSettings", _filter_record(2, 127))
+    cloud.on_shadow("MachineSettings", _filter_record(3, 0))
+    await hass.async_block_till_done()
+
+    # Reload straight away, inside the store's save delay.
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _state(hass, "sensor", "water_filter_changed").state == "2026-11-05T08:30:00+00:00"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import dataclasses
-from datetime import timedelta
+from datetime import datetime, timedelta
 import time
 import logging
 from typing import Any
@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import aiohttp_client, device_registry as dr, issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.util import dt as dt_util
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -23,6 +24,7 @@ from .api.client import (
     DaedalusConnectionError,
 )
 from .api.models import (
+    STATUS_BUSY,
     BeverageParameters,
     BeverageReport,
     DaedalusAppliance,
@@ -40,6 +42,14 @@ from .storage import DaedalusStore
 # Search for the machine after it's been out of reach this long, at most this often.
 SEARCH_AFTER = 5 * 60
 SEARCH_EVERY = 30 * 60
+# Alarms that stop Home Assistant from starting a drink.
+BREW_BLOCKING_ALARMS = (
+    "TankLevel", "TankPresence", "Waste", "NoCoffee", "General",
+    "BrewUnitClean", "Infuser", "BrokenGrinder", "HeaterNTC",
+)
+# A filter-used percentage that drops this much, to at most this, means a new filter.
+FILTER_RESET_DROP = 20
+FILTER_RESET_BELOW = 5
 
 # Settings the machine accepts at the top level of setMachineSettings, and
 # where each lives in MachineSettings.
@@ -119,25 +129,33 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self._local_ws: DaedalusLocalWebSocket | None = None
         self._unregister_ws_cb: Any | None = None
 
-        if appliance.local_ip:
-            self._init_local_websocket(appliance.local_ip)
+        # Talk to the machine directly only once the person has confirmed it:
+        # the token never goes to a device that wasn't confirmed.
+        fingerprint = store.machine_fingerprint if store else None
+        if appliance.local_ip and fingerprint:
+            self._init_local_websocket(appliance.local_ip, fingerprint)
+        self._set_issue("machine_not_confirmed", fingerprint is None)
 
-    def _init_local_websocket(self, host: str) -> None:
-        """Initialize and configure local LAN2LAN WebSocket connection."""
+    def _init_local_websocket(self, host: str, fingerprint: bytes) -> None:
+        """Connect to the confirmed machine over the home network."""
         self._local_ws = DaedalusLocalWebSocket(
             host=host,
             serial_number=self.appliance.serial_number,
             token_provider=self.cloud_client.async_get_token,
-            fingerprint=self.store.machine_fingerprint if self.store else None,
-            on_fingerprint=self.store.set_machine_fingerprint if self.store else None,
+            fingerprint=fingerprint,
             on_identity_changed=self._identity_changed,
+            on_token_rejected=lambda rejected: self._set_issue("machine_refuses_account", rejected),
         )
         self._unregister_ws_cb = self._local_ws.register_callback(self._handle_machine_message)
 
     def _identity_changed(self, mismatch: bool) -> None:
         """Show (or clear) a repair notice when the machine's certificate changes."""
-        issue_id = f"machine_identity_changed_{self.appliance.serial_number}"
-        if not mismatch:
+        self._set_issue("machine_identity_changed", mismatch)
+
+    def _set_issue(self, key: str, active: bool) -> None:
+        """Show or clear one of this machine's repair notices."""
+        issue_id = f"{key}_{self.appliance.serial_number}"
+        if not active:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return
         ir.async_create_issue(
@@ -145,9 +163,9 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             DOMAIN,
             issue_id,
             is_fixable=False,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key="machine_identity_changed",
-            translation_placeholders={"host": self.appliance.local_ip or ""},
+            severity=ir.IssueSeverity.ERROR if key != "machine_not_confirmed" else ir.IssueSeverity.WARNING,
+            translation_key=key,
+            translation_placeholders={"name": self.appliance.display_name},
         )
 
     async def async_start(self) -> None:
@@ -162,6 +180,9 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
     async def async_stop(self) -> None:
         """Stop local WebSocket and release network resources."""
         await self._cloud.async_stop()
+        if self.store:
+            # Don't leave a change (a new token, a filter date) in the delayed write.
+            await self.store.async_save_now()
         if self._unregister_ws_cb:
             self._unregister_ws_cb()
             self._unregister_ws_cb = None
@@ -169,16 +190,6 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             await self._local_ws.async_stop()
             self._local_ws = None
         await self.cloud_client.async_close()
-
-    def update_local_ip(self, new_ip: str) -> None:
-        """Update target IP address of the appliance."""
-        self.appliance.local_ip = new_ip
-        if self._local_ws:
-            self._local_ws.update_host(new_ip)
-        else:
-            self._init_local_websocket(new_ip)
-            if self._local_ws:
-                self.hass.async_create_task(self._local_ws.async_start())
 
     def _handle_machine_message(self, data: dict[str, Any]) -> None:
         """A message from the machine, over the home network or relayed by the cloud."""
@@ -194,8 +205,8 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         # 1. Power / Standby transition report (only an OK means it happened)
         elif msg_type == RESPONSE_MACHINE_UI:
             turn_on_off = data.get("TurnOnOff")
-            if turn_on_off is not None and data.get("Response") == RESPONSE_OK:
-                self.state.update_from_ui_response(int(turn_on_off))
+            if isinstance(turn_on_off, int) and data.get("Response") == RESPONSE_OK:
+                self.state.update_from_ui_response(turn_on_off)
                 _LOGGER.debug("Power state updated via WebSocket: %s", self.state.is_on)
                 self.async_set_updated_data(self.state)
 
@@ -221,8 +232,8 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
 
     async def _async_update_data(self) -> MachineState:
         """Fetch latest status from cloud and verify local socket."""
-        await self.cloud_client.async_renew_if_due()
         try:
+            await self.cloud_client.async_renew_if_due()
             # Query cloud for device online status and metadata
             devices = await self.cloud_client.async_get_devices()
             target_device = next(
@@ -236,7 +247,8 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
                 self._update_reachability()
 
         except DaedalusAuthError as err:
-            raise ConfigEntryAuthFailed(f"De'Longhi no longer accepts the saved password: {err}") from err
+            # Includes a locked account: ask the person instead of retrying.
+            raise ConfigEntryAuthFailed(f"De'Longhi no longer accepts the saved sign-in: {err}") from err
         except (DaedalusConnectionError, DaedalusApiError) as err:
             _LOGGER.debug("Cloud poll failed (continuing with local state): %s", err)
 
@@ -254,6 +266,8 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             self.state.update_from_status(status)
         elif name == "MachineSettings":
             self.state.settings = MachineSettings.from_report(reported)
+            if self.state.settings:
+                self._watch_filter(self.state.settings)
             if self.state.settings and self.state.settings.active_profile:
                 self._saw_profile(self.state.settings.active_profile)
         elif name == "MachineCapabilities" and (caps := MachineCapabilities.from_report(reported)):
@@ -332,31 +346,25 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             )
 
     async def _async_search_for_machine(self) -> None:
+        """Re-find the confirmed machine after it moved, by its certificate only.
+
+        No token is sent while searching. A machine that was never confirmed
+        isn't searched for: the person confirms it in the options instead.
+        """
         fingerprint = self.store.machine_fingerprint if self.store else None
-        if fingerprint is None and not self.cloud_client.token_valid():
-            return  # can't confirm a candidate without a token
-        found = None
-        if self._ip_hint and fingerprint and self._ip_hint != self.appliance.local_ip:
-            # Try the address the machine reported to the cloud first; the
-            # certificate still has to match.
-            found = await async_find_machine(
-                aiohttp_client.async_get_clientsession(self.hass),
-                [self._ip_hint],
-                self.appliance.serial_number,
-                fingerprint=fingerprint,
-            )
-        found = found or await async_find_local_machine(
-            self.hass,
-            self.appliance.serial_number,
-            fingerprint=fingerprint,
-            token_provider=None if fingerprint else self.cloud_client.async_get_token,
-        )
-        if found is None or found[0] == self.appliance.local_ip or self.config_entry is None:
+        if fingerprint is None or self.config_entry is None:
             return
-        _LOGGER.info("Found the coffee machine at a new address: %s", found[0])
+        found = None
+        if self._ip_hint and self._ip_hint != self.appliance.local_ip:
+            # The address the machine reported to the cloud first.
+            found = await async_find_machine([self._ip_hint], fingerprint)
+        found = found or await async_find_local_machine(self.hass, fingerprint)
+        if found is None or found == self.appliance.local_ip:
+            return
+        _LOGGER.info("Found the coffee machine at a new address")
         # Saving the address reloads the integration, which connects there.
         self.hass.config_entries.async_update_entry(
-            self.config_entry, options={**self.config_entry.options, CONF_DEVICE_IP: found[0]}
+            self.config_entry, options={**self.config_entry.options, CONF_DEVICE_IP: found}
         )
 
     def _update_reachability(self) -> None:
@@ -396,11 +404,57 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self.state.update_from_ui_response(TURN_ON_OFF_STANDBY)
         self.async_set_updated_data(self.state)
 
+    @property
+    def filter_changed(self) -> datetime | None:
+        """When a new water filter was last registered on the machine, if seen."""
+        changed = self.store.filter.get("changed") if self.store else None
+        return dt_util.parse_datetime(changed) if changed else None
+
+    def _watch_filter(self, settings: MachineSettings) -> None:
+        """Record the date when a new water filter is registered on the machine.
+
+        The machine counts filters (FilterTotCnt) and resets the filter-used
+        percentage for a new one. The first reading is only a baseline: a
+        change is recorded only when one is actually seen happening.
+        """
+        if self.store is None or settings.filters_installed is None:
+            return
+        last = self.store.filter
+        count, usage = settings.filters_installed, settings.filter_usage
+        changed = last.get("changed")
+        if "count" in last:
+            counted = count > last["count"]
+            reset = (
+                usage is not None
+                and last.get("usage") is not None
+                and usage <= FILTER_RESET_BELOW
+                and last["usage"] - usage >= FILTER_RESET_DROP
+            )
+            if counted or reset:
+                changed = dt_util.utcnow().isoformat()
+                _LOGGER.info("New water filter registered on the coffee machine")
+        self.store.set_filter({"count": count, "usage": usage, "changed": changed})
+
     def _saw_profile(self, profile: int) -> None:
         if profile > 0 and profile not in self.known_profiles:
             self.known_profiles.add(profile)
             if self.store:
                 self.store.set_profiles(sorted(self.known_profiles))
+
+    @property
+    def can_brew(self) -> bool:
+        """The one rule for whether a drink may start: every brew control uses it.
+
+        Only when the machine is known to be on and ready, isn't busy, has no
+        alarm that would make a drink go wrong, and is reachable directly.
+        """
+        state = self.state
+        if not (self._local_ws and self._local_ws.is_connected) or state.is_on is not True:
+            return False
+        status = state.status
+        if status is None or status.status == STATUS_BUSY:
+            return False
+        return not any(status.alarms.get(alarm) for alarm in BREW_BLOCKING_ALARMS)
 
     @property
     def machine_profile(self) -> int | None:
@@ -443,7 +497,11 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         Sends the whole UserConf group with only this switch changed, so the
         other switches are certain to keep their values.
         """
-        current = dict(self.state.settings.switches) if self.state.settings else {}
+        if self.state.settings is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="settings_not_known"
+            )
+        current = dict(self.state.settings.switches)
         current[name] = on
         await self._async_command(lambda ws: ws.async_set_settings({"UserConf": current}))
         if self.state.settings is not None:

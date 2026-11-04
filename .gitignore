@@ -49,3 +49,6 @@ home-assistant.log*
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Security review findings: never published
+.security-review/

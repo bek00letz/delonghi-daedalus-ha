@@ -82,8 +82,8 @@ class BeverageReport:
     def from_dict(cls, data: dict[str, Any]) -> BeverageReport:
         """Parse BeverageRequestReport payload."""
         return cls(
-            recipe_id=int(data.get("RecipeId", 0)),
-            profile_id=int(data.get("ProfileId", 1)),
+            recipe_id=_int(data.get("RecipeId")) or 0,
+            profile_id=_int(data.get("ProfileId")) or 1,
             # Coffee reports "Water"; hot water reports "WaterQty2" (seen 2026-11-04).
             water=data.get("Water", data.get("WaterQty2")),
             aroma=data.get("Aroma"),
@@ -115,6 +115,7 @@ class MachineSettings:
     switches: dict[str, bool] = field(default_factory=dict)  # UserConf, e.g. SoundEnable
     descale_progress: int | None = None  # percent of the way to the next descaling
     filter_usage: int | None = None  # percent of the water filter's life used
+    filters_installed: int | None = None  # lifetime count; goes up when a new filter is registered
     grounds_container: int | None = None  # percent full
     coffees_brewed: int | None = None  # coffee grounds count
     water_total_ml: int | None = None
@@ -139,6 +140,7 @@ class MachineSettings:
             switches={k: v for k, v in conf.items() if isinstance(v, bool)},
             descale_progress=_int(fixed.get("DecalPerc")),
             filter_usage=_int(fixed.get("FilterUsagePerc")),
+            filters_installed=_int(fixed.get("FilterTotCnt")),
             grounds_container=_int(fixed.get("GroundCntPerc")),
             coffees_brewed=_int(fixed.get("CoffeeGroundsCnt")),
             water_total_ml=_int(fixed.get("WaterTotQty")),

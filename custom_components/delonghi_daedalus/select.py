@@ -116,6 +116,11 @@ class DaedalusSettingSelect(DaedalusEntity, SelectEntity):
         super().__init__(coordinator, description.key)
         self.entity_description = description
 
+    @property
+    def available(self) -> bool:
+        """Only once the current settings are known."""
+        return super().available and self.coordinator.data.settings is not None
+
     def _raw_choices(self) -> dict[str, int]:
         d = self.entity_description
         out: dict[str, int] = {}

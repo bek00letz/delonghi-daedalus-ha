@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -82,6 +83,7 @@ async def async_setup_entry(
             DaedalusStatusSensor(coordinator),
             DaedalusLastDrinkSensor(coordinator),
             DaedalusBrewProgressSensor(coordinator),
+            DaedalusFilterChangedSensor(coordinator),
             *(DaedalusSettingsSensor(coordinator, d) for d in SETTINGS_SENSORS),
         ]
     )
@@ -118,6 +120,20 @@ class DaedalusStatusSensor(DaedalusEntity, SensorEntity):
             "peripherals": status.peripherals,
             "accessories": status.accessories,
         }
+
+
+class DaedalusFilterChangedSensor(DaedalusEntity, SensorEntity):
+    """When a new water filter was last registered on the machine."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:water-check"
+
+    def __init__(self, coordinator: DaedalusCoordinator) -> None:
+        super().__init__(coordinator, "water_filter_changed")
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.filter_changed
 
 
 class DaedalusBrewProgressSensor(DaedalusEntity, SensorEntity):

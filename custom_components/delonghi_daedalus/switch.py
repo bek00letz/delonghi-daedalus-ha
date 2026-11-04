@@ -14,11 +14,14 @@ from .const import DOMAIN
 from .coordinator import DaedalusCoordinator
 from .entity import DaedalusEntity
 
-# Switches in the machine's UserConf settings: (entity key, field name).
-MACHINE_SWITCHES: tuple[tuple[str, str], ...] = (
-    ("sound", "SoundEnable"),
-    ("energy_saving", "EnergySavingMode"),
-    ("cup_warmer", "CupWarmer"),
+# Switches in the machine's UserConf settings: (entity key, field name, on by default).
+# Every model reports CupWarmer, but only some have a heated plate (the
+# Eletta Ultra doesn't) and the machine doesn't say which, so that switch is
+# created but off by default; owners with a warming plate can turn it on.
+MACHINE_SWITCHES: tuple[tuple[str, str, bool], ...] = (
+    ("sound", "SoundEnable", True),
+    ("energy_saving", "EnergySavingMode", True),
+    ("cup_warmer", "CupWarmer", False),
 )
 
 
@@ -32,7 +35,10 @@ async def async_setup_entry(
     async_add_entities(
         [
             DaedalusPowerSwitch(coordinator),
-            *(DaedalusMachineSwitch(coordinator, key, name) for key, name in MACHINE_SWITCHES),
+            *(
+                DaedalusMachineSwitch(coordinator, key, name, enabled)
+                for key, name, enabled in MACHINE_SWITCHES
+            ),
         ]
     )
 
@@ -70,9 +76,17 @@ class DaedalusMachineSwitch(DaedalusEntity, SwitchEntity):
 
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator: DaedalusCoordinator, key: str, field_name: str) -> None:
+    def __init__(
+        self, coordinator: DaedalusCoordinator, key: str, field_name: str, enabled: bool
+    ) -> None:
         super().__init__(coordinator, key)
         self._field_name = field_name
+        self._attr_entity_registry_enabled_default = enabled
+
+    @property
+    def available(self) -> bool:
+        """Only once the current settings are known, so a change can't reset others."""
+        return super().available and self.coordinator.data.settings is not None
 
     @property
     def is_on(self) -> bool | None:

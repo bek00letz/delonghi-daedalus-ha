@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-import hashlib
 import json
 import logging
 import random
-import ssl
 import string
 from typing import Any
 
@@ -33,6 +31,9 @@ from .models import BeverageParameters
 
 _LOGGER = logging.getLogger(__name__)
 
+# After the machine refuses even a fresh token, try again this rarely (seconds).
+TOKEN_REJECTED_RETRY = 3600
+
 # Called with refresh=True after the machine rejects a token, to get a fresh one.
 TokenProvider = Callable[[bool], Awaitable[str]]
 
@@ -56,15 +57,6 @@ class DaedalusCommandError(Exception):
         self.reason = reason
 
 
-def _peer_fingerprint(ws: aiohttp.ClientWebSocketResponse) -> bytes | None:
-    """SHA-256 of the certificate the server presented on this connection."""
-    ssl_object = ws.get_extra_info("ssl_object")
-    if ssl_object is None:
-        return None
-    der = ssl_object.getpeercert(binary_form=True)
-    return hashlib.sha256(der).digest() if der else None
-
-
 def generate_request_id(length: int = 5) -> str:
     """Generate alphanumeric request nonce matching official app."""
     chars = string.ascii_letters + string.digits
@@ -82,19 +74,18 @@ class DaedalusLocalWebSocket:
         port: int = DEFAULT_WS_PORT,
         session: aiohttp.ClientSession | None = None,
         *,
-        fingerprint: bytes | None = None,
-        on_fingerprint: Callable[[bytes], None] | None = None,
+        fingerprint: bytes,
         on_identity_changed: Callable[[bool], None] | None = None,
+        on_token_rejected: Callable[[bool], None] | None = None,
     ) -> None:
-        """Initialize the local connection.
+        """Initialize the local connection to a machine the person has confirmed.
 
-        ``fingerprint`` is the SHA-256 of the machine's certificate, recorded the
-        first time the machine accepted the token. When set, only a server with
-        exactly that certificate is sent the token. When not set, the first
-        machine that accepts the token is trusted and ``on_fingerprint`` is told
-        so it can be saved (trust on first use). ``on_identity_changed(True)``
-        is called when the server at this address presents a different
-        certificate, and ``(False)`` once the trusted one is back.
+        ``fingerprint`` is the SHA-256 of that machine's certificate. Only a
+        server presenting exactly that certificate is ever sent the token; there
+        is no "trust on first use". ``on_identity_changed(True)`` is called when
+        the server at this address presents a different certificate, and
+        ``(False)`` once the trusted one is back. ``on_token_rejected(True)``
+        is called when the machine refuses even a freshly renewed token.
         """
         self._host = host
         self._port = port
@@ -102,10 +93,10 @@ class DaedalusLocalWebSocket:
         self._token_provider = token_provider
         self._refresh_token = False
         self._fingerprint = fingerprint
-        self._on_fingerprint = on_fingerprint
         self._on_identity_changed = on_identity_changed
+        self._on_token_rejected = on_token_rejected
         self.identity_mismatch = False
-        self._pending_fingerprint: bytes | None = None
+        self.token_rejected = False
         self._session = session
         self._owns_session = False
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -130,7 +121,7 @@ class DaedalusLocalWebSocket:
     def update_host(self, new_host: str) -> None:
         """Update host IP address if updated via DHCP / cloud shadow."""
         if self._host != new_host:
-            _LOGGER.info("Updating Daedalus appliance IP address from %s to %s", self._host, new_host)
+            _LOGGER.info("The coffee machine has a new address")
             self._host = new_host
 
     def register_callback(self, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
@@ -162,13 +153,6 @@ class DaedalusLocalWebSocket:
         self.identity_mismatch = mismatch
         if self._on_identity_changed is not None:
             self._on_identity_changed(mismatch)
-
-    def _create_ssl_context(self) -> ssl.SSLContext:
-        """Create trust-all SSL context matching ESP32 self-signed certificate."""
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
 
     async def async_start(self) -> None:
         """Start background connection maintenance loop."""
@@ -213,9 +197,8 @@ class DaedalusLocalWebSocket:
                 await self._disconnect()
                 if not self.identity_mismatch:
                     _LOGGER.warning(
-                        "The device at %s is not the coffee machine Home Assistant trusts "
-                        "(its certificate changed). Not connecting.",
-                        self._host,
+                        "The device at the coffee machine's address is not the machine "
+                        "Home Assistant trusts (its certificate changed). Not connecting."
                     )
                     self._set_identity_mismatch(True)
                 await asyncio.sleep(MAX_RECONNECT_DELAY)
@@ -226,13 +209,18 @@ class DaedalusLocalWebSocket:
                     _LOGGER.debug("Machine rejected the token (%s); retrying with a fresh one", err)
                     self._refresh_token = True
                     continue
-                _LOGGER.warning(
-                    "Coffee machine at %s rejected a fresh De'Longhi token: %s", self._host, err
-                )
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, MAX_RECONNECT_DELAY)
+                # Even a fresh token was refused: the machine may have been reset
+                # or unlinked from this account. Don't ask De'Longhi for new
+                # tokens over and over (that can lock the account); wait long.
+                self._refresh_token = False
+                if not self.token_rejected:
+                    _LOGGER.warning("The coffee machine refused a freshly renewed De'Longhi token")
+                    self.token_rejected = True
+                    if self._on_token_rejected is not None:
+                        self._on_token_rejected(True)
+                await asyncio.sleep(TOKEN_REJECTED_RETRY)
             except Exception as err:
-                _LOGGER.debug("Daedalus local WebSocket connection error (%s): %s", self._host, err)
+                _LOGGER.debug("Local connection to the coffee machine failed: %s", type(err).__name__)
                 await self._disconnect()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, MAX_RECONNECT_DELAY)
@@ -241,15 +229,11 @@ class DaedalusLocalWebSocket:
         """Connect to appliance WebSocket, authenticate, and process messages."""
         session = await self._get_session()
         # The machine's certificate is self-signed, so the CA check can't
-        # identify it. Pin its exact certificate instead once it is known.
-        ssl_check: ssl.SSLContext | aiohttp.Fingerprint = (
-            aiohttp.Fingerprint(self._fingerprint)
-            if self._fingerprint
-            else self._create_ssl_context()
-        )
+        # identify it: pin the exact certificate the person confirmed.
+        ssl_check = aiohttp.Fingerprint(self._fingerprint)
         url = f"wss://{self._host}:{self._port}{DEFAULT_WS_PATH}"
 
-        _LOGGER.debug("Connecting to Daedalus local WebSocket at %s", url)
+        _LOGGER.debug("Connecting to the coffee machine over the home network")
         async with session.ws_connect(
             url,
             ssl=ssl_check,
@@ -257,7 +241,6 @@ class DaedalusLocalWebSocket:
             heartbeat=30.0,
         ) as ws:
             self._ws = ws
-            self._pending_fingerprint = _peer_fingerprint(ws)
             if self.identity_mismatch:
                 self._set_identity_mismatch(False)
             # Step 1: authenticate with the account token. The machine checks
@@ -269,7 +252,7 @@ class DaedalusLocalWebSocket:
                 "AuthToken": token,
             }
             await ws.send_json(auth_payload)
-            _LOGGER.debug("Sent auth handshake for serial %s", self._serial_number)
+            _LOGGER.debug("Sent the sign-in to the coffee machine")
 
             # Step 2: Message listening loop
             async for msg in ws:
@@ -278,7 +261,7 @@ class DaedalusLocalWebSocket:
                         data = json.loads(msg.data)
                         await self._handle_incoming_message(data)
                     except json.JSONDecodeError:
-                        _LOGGER.warning("Received invalid non-JSON payload from appliance: %s", msg.data)
+                        _LOGGER.debug("Ignored an unreadable message (%d characters)", len(msg.data))
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     _LOGGER.debug("WebSocket connection closed or error received")
                     break
@@ -293,17 +276,11 @@ class DaedalusLocalWebSocket:
             self._connection_id = data["ConnectionId"]
             self._is_connected = True
             self._refresh_token = False
-            if self._fingerprint is None and self._pending_fingerprint is not None:
-                # First machine to accept this account's token: trust its certificate.
-                self._fingerprint = self._pending_fingerprint
-                _LOGGER.info("Trusting the coffee machine's certificate at %s", self._host)
-                if self._on_fingerprint is not None:
-                    self._on_fingerprint(self._fingerprint)
-            _LOGGER.info(
-                "Connected to coffee machine at %s over the home network (ConnectionId %s)",
-                self._host,
-                self._connection_id,
-            )
+            if self.token_rejected:
+                self.token_rejected = False
+                if self._on_token_rejected is not None:
+                    self._on_token_rejected(False)
+            _LOGGER.info("Connected to the coffee machine over the home network")
 
         self._resolve_pending(data)
         self._notify_callbacks(data)

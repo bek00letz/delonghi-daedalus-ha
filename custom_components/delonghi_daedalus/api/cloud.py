@@ -280,7 +280,7 @@ class DaedalusCloudConnection:
                         pass
                 refused = [t for t, code in zip(topics, suback[-len(topics) :]) if code >= 0x80]
                 if refused:
-                    _LOGGER.debug("Cloud refused subscriptions: %s", refused)
+                    _LOGGER.debug("Cloud refused %d subscriptions", len(refused))
             self._set_connected(True)
             await self.async_request_shadows()
             pinger = asyncio.create_task(self._ping(ws))
@@ -320,14 +320,14 @@ class DaedalusCloudConnection:
             except ValueError:
                 return
             if isinstance(message, dict) and self._on_machine_message is not None:
-                self._on_machine_message(message)
+                self._deliver(self._on_machine_message, message)
             return
         prefix = f"$aws/things/{self._thing}/shadow/name/"
         if not topic.startswith(prefix):
             return
         name, _, suffix = topic[len(prefix) :].partition("/")
         if suffix == "get/rejected":
-            _LOGGER.debug("Cloud has no %s for this machine: %s", name, payload[:200])
+            _LOGGER.debug("Cloud has no %s record for this machine", name)
             return
         try:
             reported = json.loads(payload)["state"]["reported"]
@@ -338,4 +338,48 @@ class DaedalusCloudConnection:
         if suffix == "update/accepted":
             reported = merge(self._reported.get(name, {}), reported)
         self._reported[name] = reported
-        self._on_shadow(name, reported)
+        self._deliver(self._on_shadow, name, reported)
+
+    @staticmethod
+    def _deliver(callback: Callable[..., None], *args: Any) -> None:
+        """Hand a message on; a message the integration can't use is skipped, not fatal."""
+        try:
+            callback(*args)
+        except Exception:
+            _LOGGER.debug("Skipped a cloud message that couldn't be used", exc_info=True)
+
+
+async def async_read_reported_address(
+    session: aiohttp.ClientSession,
+    thing_name: str,
+    token: str,
+    *,
+    timeout: float = CONNECT_TIMEOUT,
+    **kwargs: Any,
+) -> str | None:
+    """The address the machine reports to the cloud (LanIpAddress), or None.
+
+    Read over an authenticated, certificate-checked connection to AWS, so a
+    device on the home network can't fake it: it's the evidence the confirm
+    screen shows for which device is really the machine.
+    """
+    found: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+
+    def on_shadow(name: str, reported: dict[str, Any]) -> None:
+        if name == "MachineStatus" and not found.done():
+            found.set_result(reported)
+
+    async def token_provider(refresh: bool) -> str:
+        return token
+
+    connection = DaedalusCloudConnection(session, thing_name, token_provider, on_shadow, **kwargs)
+    await connection.async_start()
+    try:
+        async with asyncio.timeout(timeout):
+            reported = await found
+    except TimeoutError:
+        return None
+    finally:
+        await connection.async_stop()
+    address = reported.get("LanIpAddress")
+    return address if isinstance(address, str) else None

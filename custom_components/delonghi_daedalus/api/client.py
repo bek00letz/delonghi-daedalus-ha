@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import Callable
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -18,6 +20,8 @@ from ..const import (
     GIGYA_JWT_EXPIRATION,
     GIGYA_JWT_URL,
     GIGYA_LOGIN_URL,
+    GIGYA_LOGOUT_URL,
+    GIGYA_SESSION_EXPIRATION,
 )
 from .models import DaedalusAppliance
 
@@ -59,8 +63,23 @@ def token_expiry(token: str) -> float | None:
         return None
 
 
+# Token renewals happen at most this often (seconds), whoever asks.
+MIN_RENEW_INTERVAL = 10 * 60
+# After De'Longhi locks the account for too many attempts, wait this long.
+LOCKED_BACKOFF = 6 * 3600
+
+_SECRET_IN_URL = re.compile(r"(secret=)[^&\s'\"]+")
+
+
+def _redact(text: str) -> str:
+    """Hide a session secret that an error message may carry in a URL."""
+    return _SECRET_IN_URL.sub(r"\1<redacted>", text)
+
+
 # Gigya error codes that mean the credentials themselves were refused.
 GIGYA_WRONG_CREDENTIALS = {403042, 403047}
+# The saved session no longer works (expired, revoked).
+GIGYA_SESSION_ENDED = {403005, 403007}
 # Too many attempts: the account is temporarily locked or wants a CAPTCHA.
 GIGYA_LOCKED = {403120, 401020, 401021, 401030}
 
@@ -75,6 +94,9 @@ def _raise_for_gigya_error(data: dict[str, Any], step: str) -> None:
     if code in GIGYA_LOCKED:
         raise DaedalusAccountLockedError(message)
     if code in GIGYA_WRONG_CREDENTIALS:
+        raise DaedalusAuthError(message)
+    if step == "token request" and code in GIGYA_SESSION_ENDED:
+        # The saved session was ended (expired or signed out): sign in again.
         raise DaedalusAuthError(message)
     raise DaedalusApiError(message)
 
@@ -100,57 +122,100 @@ async def _read_json(resp: aiohttp.ClientResponse) -> dict[str, Any]:
 
 
 class DaedalusCloudClient:
-    """Handles communication with De'Longhi identity and cloud gateways."""
+    """De'Longhi's identity service (Gigya) and device list, for one account.
+
+    The password is used only to sign in and is never kept: what's kept is
+    the Gigya *session* (a session token and secret) that sign-in returns.
+    The session mints the 90-day account token, which is the key to the
+    machine and to De'Longhi's cloud.
+
+    All token renewals go through one gate (``_async_renew``): one at a time,
+    at most every ``MIN_RENEW_INTERVAL``; once De'Longhi refuses the session
+    it stops trying until someone signs in again, and after an account lock
+    it waits ``LOCKED_BACKOFF``. That keeps a changed password or a confused
+    machine from turning into a storm of sign-ins that locks the account.
+    """
 
     def __init__(
         self,
         session: aiohttp.ClientSession | None = None,
         *,
         token: str | None = None,
-        credentials: tuple[str, str] | None = None,
+        gigya_session: tuple[str, str] | None = None,
         on_token: Callable[[str], None] | None = None,
+        on_session: Callable[[tuple[str, str]], None] | None = None,
     ) -> None:
         """Initialize the client.
 
-        ``token`` is a previously saved account token; ``credentials`` let it be
-        renewed without asking; ``on_token`` is told about every new token so it
-        can be saved.
+        ``token`` is a saved account token and ``gigya_session`` a saved
+        (session token, session secret). ``on_token`` and ``on_session`` are
+        told about new ones so they can be saved.
         """
         self._session = session
         self._owns_session = False
         self._jwt_token = token
-        self._session_secret: str | None = None
-        self._session_token: str | None = None
-        self._credentials = credentials
+        self._session_token, self._session_secret = gigya_session or (None, None)
         self._on_token = on_token
+        self._on_session = on_session
+        self._renew_lock = asyncio.Lock()
+        self._last_renew = -MIN_RENEW_INTERVAL
+        self._refused = False
+        self._locked_until = 0.0
 
     @property
     def token_expires(self) -> float | None:
         """When the current account token expires (seconds since 1970)."""
         return token_expiry(self._jwt_token) if self._jwt_token else None
 
+    @property
+    def has_session(self) -> bool:
+        return bool(self._session_token and self._session_secret)
+
+    @property
+    def gigya_session(self) -> tuple[str, str] | None:
+        if self._session_token and self._session_secret:
+            return self._session_token, self._session_secret
+        return None
+
     def token_valid(self, margin: float = 0) -> bool:
         """True if there is a token with more than ``margin`` seconds left."""
         expires = self.token_expires
         return expires is not None and expires - time.time() > margin
 
-    async def async_authenticate(self, username: str, password: str) -> None:
-        """Sign in and get a cloud token: the one sign-in path for every caller.
+    async def async_sign_in(self, username: str, password: str) -> None:
+        """Sign in with the password, keep only the session, and get a token.
 
-        The credentials are remembered so an expired token can be renewed
-        silently, without asking the person for their password again.
+        The one place a password is used. It isn't stored anywhere.
         """
         await self.async_login(username, password)
+        self._refused = False
+        self._locked_until = 0.0
+        if self._on_session is not None and (session := self.gigya_session):
+            self._on_session(session)
         await self.async_get_jwt()
-        self._credentials = (username, password)
+        self._last_renew = time.monotonic()
 
-    async def _async_reauthenticate(self) -> bool:
-        """Renew the cloud token with remembered credentials. False if there are none."""
-        if self._credentials is None:
-            return False
-        _LOGGER.debug("De'Longhi cloud token rejected; signing in again")
-        await self.async_authenticate(*self._credentials)
-        return True
+    async def _async_renew(self) -> None:
+        """Get a fresh token from the saved session: the one renewal gate."""
+        async with self._renew_lock:
+            now = time.monotonic()
+            if self._refused:
+                raise DaedalusAuthError("De'Longhi refused the saved session; sign in again")
+            if now < self._locked_until:
+                raise DaedalusAccountLockedError("De'Longhi has paused sign-ins for this account")
+            if not self.has_session:
+                raise DaedalusAuthError("No saved De'Longhi session; sign in again")
+            if now - self._last_renew < MIN_RENEW_INTERVAL and self.token_valid():
+                return  # renewed moments ago (perhaps by another part); don't hammer
+            self._last_renew = now
+            try:
+                await self.async_get_jwt()
+            except DaedalusAccountLockedError:
+                self._locked_until = now + LOCKED_BACKOFF
+                raise
+            except DaedalusAuthError:
+                self._refused = True
+                raise
 
     async def async_get_token(self, refresh: bool = False) -> str:
         """Return the account token, renewing it if asked or if it has expired.
@@ -163,8 +228,7 @@ class DaedalusCloudClient:
         if not refresh and self.token_valid():
             return self._jwt_token  # type: ignore[return-value]
         try:
-            if not await self._async_reauthenticate():
-                raise DaedalusAuthError("No saved credentials to get a De'Longhi token with")
+            await self._async_renew()
         except (DaedalusConnectionError, DaedalusApiError):
             if self.token_valid():
                 _LOGGER.debug("Couldn't renew the De'Longhi token; using the saved one")
@@ -174,14 +238,35 @@ class DaedalusCloudClient:
         return self._jwt_token
 
     async def async_renew_if_due(self) -> None:
-        """Renew the token when it is close to expiring and the cloud is reachable."""
-        if self.token_valid(TOKEN_RENEW_BEFORE) or self._credentials is None:
+        """Renew the token when it is close to expiring and the cloud is reachable.
+
+        A refused session or a locked account is raised, so the caller can
+        ask the person to sign in again instead of retrying.
+        """
+        if self.token_valid(TOKEN_RENEW_BEFORE) or not self.has_session:
             return
         try:
-            await self._async_reauthenticate()
+            await self._async_renew()
             _LOGGER.debug("Renewed the De'Longhi token ahead of expiry")
         except (DaedalusConnectionError, DaedalusApiError) as err:
             _LOGGER.debug("Couldn't renew the De'Longhi token yet: %s", err)
+
+    async def async_sign_out(self) -> None:
+        """End the saved Gigya session (best effort), e.g. when the integration is removed."""
+        if not self.has_session:
+            return
+        session = await self._get_session()
+        try:
+            async with session.post(
+                GIGYA_LOGOUT_URL,
+                params={"apiKey": GIGYA_API_KEY, "secret": self._session_secret, "httpStatusCodes": "true"},
+                headers={"Authorization": f"Bearer {self._session_token}"},
+                timeout=REQUEST_TIMEOUT,
+            ) as resp:
+                await resp.read()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Couldn't sign out of De'Longhi: %s", _redact(str(err)))
+        self._session_token = self._session_secret = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Retrieve or create active aiohttp session."""
@@ -195,14 +280,16 @@ class DaedalusCloudClient:
         if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
 
-    async def async_login(self, username: str, password: str) -> str:
-        """Authenticate with SAP Gigya SSO and return session secret."""
+    async def async_login(self, username: str, password: str) -> None:
+        """Sign in to Gigya and keep the session (not the password)."""
         session = await self._get_session()
         payload = {
             "apiKey": GIGYA_API_KEY,
             "loginID": username,
             "password": password,
             "targetEnv": "mobile",
+            # As the app asks (seen 2026-11-04): a 90-day session.
+            "sessionExpiration": str(GIGYA_SESSION_EXPIRATION),
             "httpStatusCodes": "true",
         }
 
@@ -210,7 +297,7 @@ class DaedalusCloudClient:
             async with session.post(GIGYA_LOGIN_URL, data=payload, timeout=REQUEST_TIMEOUT) as resp:
                 data = await _read_json(resp)
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise DaedalusConnectionError(f"Network error during Gigya login: {err}") from err
+            raise DaedalusConnectionError(f"Network error during Gigya login: {_redact(str(err))}") from err
 
         _raise_for_gigya_error(data, "sign-in")
 
@@ -220,7 +307,6 @@ class DaedalusCloudClient:
 
         self._session_secret = session_info["sessionSecret"]
         self._session_token = session_info["sessionToken"]
-        return self._session_secret
 
     async def async_get_jwt(self) -> str:
         """Exchange the sign-in session for the 90-day account token.
@@ -247,7 +333,8 @@ class DaedalusCloudClient:
             ) as resp:
                 data = await _read_json(resp)
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise DaedalusConnectionError(f"Network error during JWT exchange: {err}") from err
+            # aiohttp errors can carry the URL, which holds the session secret.
+            raise DaedalusConnectionError(f"Network error during JWT exchange: {_redact(str(err))}") from err
 
         _raise_for_gigya_error(data, "token request")
 
@@ -270,8 +357,7 @@ class DaedalusCloudClient:
         try:
             data = await self._async_fetch_devices()
         except DaedalusAuthError:
-            if not await self._async_reauthenticate():
-                raise
+            await self._async_renew()
             data = await self._async_fetch_devices()
         return self._parse_devices(data)
 

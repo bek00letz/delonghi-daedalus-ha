@@ -22,7 +22,10 @@ from .api.models import DaedalusAppliance
 from .const import (
     CONF_DEVICE_IP,
     CONF_MODEL,
+    CONF_FINGERPRINT_HANDOFF,
     CONF_PASSWORD,
+    CONF_SESSION_HANDOFF,
+    CONF_TOKEN_HANDOFF,
     CONF_POLL_INTERVAL,
     CONF_SERIAL_NUMBER,
     CONF_THING_NAME,
@@ -47,36 +50,41 @@ PLATFORMS: list[Platform] = [
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up De'Longhi Daedalus from a config entry."""
     username = entry.data[CONF_USERNAME]
-    password = entry.data[CONF_PASSWORD]
     store = DaedalusStore(hass, entry.entry_id)
     await store.async_load()
+    _take_handoff(hass, entry, store)
     cloud_client = DaedalusCloudClient(
         aiohttp_client.async_get_clientsession(hass),
         token=store.token,
-        credentials=(username, password),
+        gigya_session=store.gigya_session,
         on_token=store.set_token,
+        on_session=store.set_gigya_session,
     )
 
-    # Sign in only when there's no saved token or it's close to expiring.
-    # Without the internet, a saved token that hasn't expired keeps local
-    # control working; rejected credentials won't fix themselves.
-    if not cloud_client.token_valid(TOKEN_RENEW_BEFORE):
-        try:
-            await cloud_client.async_authenticate(username, password)
-        except DaedalusAuthError as err:
-            # Home Assistant shows a "sign in again" prompt for this entry.
-            raise ConfigEntryAuthFailed(
-                "De’Longhi no longer accepts the saved password"
-            ) from err
-        except (DaedalusConnectionError, DaedalusApiError) as err:
-            if not cloud_client.token_valid():
-                raise ConfigEntryNotReady(f"Couldn’t reach De’Longhi cloud: {err}") from err
-            _LOGGER.warning(
-                "Couldn’t reach De’Longhi cloud (%s). Using the saved token, which works "
-                "until %s; it renews when the cloud is back",
-                err,
-                dt_util.utc_from_timestamp(cloud_client.token_expires or 0).date(),
+    try:
+        if CONF_PASSWORD in entry.data:
+            # Set up before v0.7: sign in once more, keep the session, and
+            # delete the stored password.
+            await cloud_client.async_sign_in(username, entry.data[CONF_PASSWORD])
+            hass.config_entries.async_update_entry(
+                entry, data={k: v for k, v in entry.data.items() if k != CONF_PASSWORD}
             )
+        elif not cloud_client.token_valid(TOKEN_RENEW_BEFORE):
+            # Renew only when close to expiring; without the internet a saved
+            # token that hasn't expired keeps local control working.
+            await cloud_client.async_get_token(refresh=True)
+    except DaedalusAuthError as err:
+        # Home Assistant shows a "sign in again" prompt for this entry.
+        raise ConfigEntryAuthFailed("De’Longhi no longer accepts the saved sign-in") from err
+    except (DaedalusConnectionError, DaedalusApiError) as err:
+        if not cloud_client.token_valid():
+            raise ConfigEntryNotReady(f"Couldn’t reach De’Longhi cloud: {err}") from err
+        _LOGGER.warning(
+            "Couldn’t reach De’Longhi cloud (%s). Using the saved token, which works "
+            "until %s; it renews when the cloud is back",
+            err,
+            dt_util.utc_from_timestamp(cloud_client.token_expires or 0).date(),
+        )
 
     # Determine active IP (options take precedence over data)
     device_ip = entry.options.get(CONF_DEVICE_IP, entry.data.get(CONF_DEVICE_IP)) or None
@@ -121,9 +129,35 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+def _take_handoff(hass: HomeAssistant, entry: ConfigEntry, store: DaedalusStore) -> None:
+    """Move secrets the setup screens handed over into the private store.
+
+    The config entry is only a carrier: afterwards the session, token and
+    machine fingerprint live in one place, the store.
+    """
+    keys = (CONF_SESSION_HANDOFF, CONF_TOKEN_HANDOFF, CONF_FINGERPRINT_HANDOFF)
+    if not any(k in entry.data for k in keys):
+        return
+    if session := entry.data.get(CONF_SESSION_HANDOFF):
+        store.set_gigya_session((session[0], session[1]))
+    if token := entry.data.get(CONF_TOKEN_HANDOFF):
+        store.set_token(token)
+    if fingerprint := entry.data.get(CONF_FINGERPRINT_HANDOFF):
+        store.set_machine_fingerprint(bytes.fromhex(fingerprint))
+    hass.config_entries.async_update_entry(
+        entry, data={k: v for k, v in entry.data.items() if k not in keys}
+    )
+
+
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the saved token and certificate when the integration is removed."""
-    await DaedalusStore(hass, entry.entry_id).async_remove()
+    """Sign the session out and delete the saved session, token and certificate."""
+    store = DaedalusStore(hass, entry.entry_id)
+    await store.async_load()
+    client = DaedalusCloudClient(
+        aiohttp_client.async_get_clientsession(hass), gigya_session=store.gigya_session
+    )
+    await client.async_sign_out()
+    await store.async_remove()
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:

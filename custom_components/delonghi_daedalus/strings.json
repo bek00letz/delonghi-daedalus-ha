@@ -10,7 +10,7 @@
           "device_ip": "Coffee machine’s IP address (optional)"
         },
         "data_description": {
-          "device_ip": "Leave empty to find the machine on your network automatically."
+          "device_ip": "Leave empty to find the machine on your network. Either way, you confirm it before it receives your sign-in."
         }
       },
       "select_device": {
@@ -29,9 +29,16 @@
       },
       "local_address": {
         "title": "Coffee machine not found",
-        "description": "Home Assistant couldn’t find your coffee machine on the network. Check that it’s on and connected to Wi-Fi, then enter its IP address (your router’s device list shows it). Leave empty to continue without control over your home network; Home Assistant keeps looking.",
+        "description": "Home Assistant didn’t find your coffee machine on the network. Your machine reports its address to De’Longhi as **{reported}**. Check that it’s on and connected to Wi-Fi, then enter its address. Leave it empty to continue without control over your home network; you can confirm the machine later in the integration’s options.",
         "data": {
           "device_ip": "IP address"
+        }
+      },
+      "confirm_machine": {
+        "title": "Confirm your coffee machine",
+        "description": "Home Assistant found these devices that look like a coffee machine. Your machine reports its address to De’Longhi as **{reported}**; pick that one if it’s listed.\n\nOnly the device you pick receives your De’Longhi sign-in, and Home Assistant then trusts only that exact device.",
+        "data": {
+          "machine": "Device"
         }
       }
     },
@@ -41,7 +48,9 @@
       "no_devices": "No smart coffee machines found linked to this De’Longhi account.",
       "unknown": "De’Longhi’s sign-in service gave an unexpected answer. Try again in a moment. If it keeps happening, the Home Assistant log has the details.",
       "device_not_on_account": "This coffee machine is no longer linked to {username}. Check that it still appears in the My Coffee Lounge app.",
-      "account_locked": "De’Longhi has paused sign-ins for this account after too many attempts. Sign in once in the My Coffee Lounge app, then try again in a few minutes."
+      "account_locked": "De’Longhi has paused sign-ins for this account after too many attempts. Sign in once in the My Coffee Lounge app, then try again in a few minutes.",
+      "invalid_address": "Enter an IP address on your home network, like 192.168.1.50, without a port or name.",
+      "machine_refused": "That device didn’t accept your De’Longhi sign-in, so it isn’t your coffee machine. Pick another one, or check that your machine is on."
     },
     "abort": {
       "already_configured": "This coffee machine is already configured in Home Assistant.",
@@ -54,19 +63,37 @@
   "options": {
     "step": {
       "init": {
-        "title": "Appliance Settings",
-        "description": "Adjust local network connectivity and cloud update polling interval.",
+        "title": "Options",
+        "description": "How often Home Assistant checks De’Longhi’s cloud, and confirming your coffee machine.",
         "data": {
-          "device_ip": "Appliance IP Address",
-          "poll_interval": "Cloud Polling Interval (seconds)",
-          "retrust_machine": "Trust the coffee machine again"
+          "poll_interval": "Cloud check interval (seconds)",
+          "confirm_machine": "Confirm the coffee machine"
         },
         "data_description": {
-          "device_ip": "The local network IP address of your coffee machine.",
-          "poll_interval": "How frequently to refresh appliance status from De’Longhi cloud services.",
-          "retrust_machine": "Only after resetting or re-pairing the machine. Home Assistant then trusts the next machine at this address that accepts your De’Longhi account."
+          "confirm_machine": "Find your machine on the network and confirm it, e.g. after resetting it. Only the device you confirm receives your De’Longhi sign-in."
+        }
+      },
+      "confirm_machine": {
+        "title": "Confirm your coffee machine",
+        "description": "Home Assistant found these devices that look like a coffee machine. Your machine reports its address to De’Longhi as **{reported}**; pick that one if it’s listed.\n\nOnly the device you pick receives your De’Longhi sign-in, and Home Assistant then trusts only that exact device.",
+        "data": {
+          "machine": "Device"
+        }
+      },
+      "local_address": {
+        "title": "Coffee machine not found",
+        "description": "Home Assistant didn’t find your coffee machine on the network. Your machine reports its address to De’Longhi as **{reported}**. Check that it’s on and connected to Wi-Fi, then enter its address. Leave it empty to continue without control over your home network; you can confirm the machine later in the integration’s options.",
+        "data": {
+          "device_ip": "IP address"
         }
       }
+    },
+    "error": {
+      "invalid_address": "Enter an IP address on your home network, like 192.168.1.50, without a port or name.",
+      "machine_refused": "That device didn’t accept your De’Longhi sign-in, so it isn’t your coffee machine. Pick another one, or check that your machine is on."
+    },
+    "progress": {
+      "searching": "Looking for your coffee machine on your network. This takes a few seconds."
     }
   },
   "entity": {
@@ -111,6 +138,9 @@
       },
       "brew_progress": {
         "name": "Brew progress"
+      },
+      "water_filter_changed": {
+        "name": "Water filter changed"
       }
     },
     "binary_sensor": {
@@ -270,12 +300,26 @@
     },
     "command_connection_lost": {
       "message": "The connection to the coffee machine dropped. Try again in a moment."
+    },
+    "cannot_brew_now": {
+      "message": "The coffee machine isn’t ready for a drink: it needs to be on and ready, with no tank, grounds or beans alert, and reachable on your home network."
+    },
+    "settings_not_known": {
+      "message": "The coffee machine’s current settings aren’t known yet. Try again once it has reported them."
     }
   },
   "issues": {
     "machine_identity_changed": {
       "title": "Coffee machine’s identity changed",
-      "description": "The device at {host} isn’t the coffee machine Home Assistant trusts, so Home Assistant won’t send it your De’Longhi token.\\n\\nIf you reset or re-paired the machine, open the De’Longhi Daedalus integration’s options and turn on **Trust the coffee machine again**. If you didn’t, something on your network may be posing as the machine."
+      "description": "The device at your coffee machine’s address isn’t the machine Home Assistant trusts, so Home Assistant won’t send it your De’Longhi sign-in.\n\nUnless you know you reset or re-paired {name}, treat this as suspicious: something on your network may be posing as it. If you did reset it, open the integration’s options and turn on **Confirm the coffee machine**, then pick the device at the address your machine reports to De’Longhi."
+    },
+    "machine_not_confirmed": {
+      "title": "Confirm your coffee machine",
+      "description": "Home Assistant can control {name} over your home network once you’ve confirmed which device it is. Open the integration’s options and turn on **Confirm the coffee machine**."
+    },
+    "machine_refuses_account": {
+      "title": "Coffee machine refuses your account",
+      "description": "{name} no longer accepts your De’Longhi sign-in, even a fresh one. It may have been reset or removed from your account in the My Coffee Lounge app. Home Assistant will try again in an hour; if you reset it, add it to your account in the app again."
     }
   }
 }

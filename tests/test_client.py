@@ -7,15 +7,17 @@ client never again mistakes a valid answer for a network failure.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestServer
 import pytest
 
 from custom_components.delonghi_daedalus.api import client as client_module
+from tests.helpers import DAY, make_token
 from custom_components.delonghi_daedalus.api.client import (
     DaedalusAccountLockedError,
     DaedalusApiError,
@@ -75,6 +77,7 @@ async def _run(routes: dict[str, Any], scenario) -> Any:
         with (
             patch.object(client_module, "GIGYA_LOGIN_URL", f"{base}/accounts.login"),
             patch.object(client_module, "GIGYA_JWT_URL", f"{base}/accounts.getJWT"),
+            patch.object(client_module, "GIGYA_LOGOUT_URL", f"{base}/accounts.logout"),
             patch.object(client_module, "AWS_GATEWAY_URL", base),
         ):
             async with ClientSession() as session:
@@ -104,7 +107,7 @@ async def test_login_and_discovery_succeed_with_gigya_content_type() -> None:
         )
 
     async def scenario(client: DaedalusCloudClient):
-        await client.async_authenticate("user@example.com", "right")
+        await client.async_sign_in("user@example.com", "right")
         return await client.async_get_devices()
 
     found = await _run(
@@ -134,8 +137,23 @@ async def test_wrong_password_is_an_auth_error_not_a_connection_error() -> None:
         await _run({"/accounts.login": login}, scenario)
 
 
-async def test_token_request_failure_is_not_a_password_error() -> None:
-    """A refused token request means something else went wrong, not a wrong password."""
+async def test_unexpected_token_request_error_is_not_a_sign_in_problem() -> None:
+    async def login(_: web.Request) -> web.Response:
+        return _session()
+
+    async def jwt(_: web.Request) -> web.Response:
+        return _gigya({"errorCode": 500001, "errorDetails": "General server error"}, 500)
+
+    async def scenario(client: DaedalusCloudClient):
+        await client.async_sign_in("user@example.com", "right")
+
+    with pytest.raises(DaedalusApiError, match="500001") as err:
+        await _run({"/accounts.login": login, "/accounts.getJWT": jwt}, scenario)
+    assert not isinstance(err.value, DaedalusAuthError)
+
+
+async def test_an_ended_session_means_sign_in_again() -> None:
+    """De'Longhi answering "unauthorized" to a token request: the saved session ended."""
 
     async def login(_: web.Request) -> web.Response:
         return _session()
@@ -144,11 +162,10 @@ async def test_token_request_failure_is_not_a_password_error() -> None:
         return _gigya({"errorCode": 403005, "errorDetails": "Unauthorized user"}, 403)
 
     async def scenario(client: DaedalusCloudClient):
-        await client.async_authenticate("user@example.com", "right")
+        await client.async_sign_in("user@example.com", "right")
 
-    with pytest.raises(DaedalusApiError, match="403005") as err:
+    with pytest.raises(DaedalusAuthError, match="403005"):
         await _run({"/accounts.login": login, "/accounts.getJWT": jwt}, scenario)
-    assert not isinstance(err.value, DaedalusAuthError)
 
 
 @pytest.mark.parametrize("code", [403120, 401020])
@@ -189,15 +206,19 @@ async def test_unreachable_host_is_a_connection_error() -> None:
 
 
 async def test_expired_token_is_renewed_silently() -> None:
-    """A rejected token triggers one quiet sign-in with the saved password, then a retry."""
-    calls = {"login": 0, "devices": 0}
+    """A rejected token gets a fresh one from the saved session (no password), then a retry."""
+    calls = {"login": 0, "jwt": 0, "devices": 0}
 
     async def login(_: web.Request) -> web.Response:
         calls["login"] += 1
         return _session(calls["login"])
 
     async def jwt(request: web.Request) -> web.Response:
-        return _strict_jwt(request)
+        calls["jwt"] += 1
+        answer = _strict_jwt(request)
+        if calls["jwt"] > 1 and answer.status == 200:  # a new token each time
+            return _gigya({"errorCode": 0, "id_token": f"jwt-renewed-{calls['jwt']}"})
+        return answer
 
     async def devices(request: web.Request) -> web.Response:
         calls["devices"] += 1
@@ -206,14 +227,14 @@ async def test_expired_token_is_renewed_silently() -> None:
         return web.json_response({"ownedByMe": [{"serialNumber": "SN1"}]})
 
     async def scenario(client: DaedalusCloudClient):
-        await client.async_authenticate("user@example.com", "right")
+        await client.async_sign_in("user@example.com", "right")
         return await client.async_get_devices()
 
     found = await _run(
         {"/accounts.login": login, "/accounts.getJWT": jwt, "/devices": devices}, scenario
     )
     assert [d.serial_number for d in found] == ["SN1"]
-    assert calls == {"login": 2, "devices": 2}
+    assert calls == {"login": 1, "jwt": 2, "devices": 2}  # signed in once, renewed once
 
 
 async def test_token_rejected_twice_is_an_auth_error() -> None:
@@ -229,10 +250,78 @@ async def test_token_rejected_twice_is_an_auth_error() -> None:
         return web.json_response({"message": "Unauthorized"}, status=401)
 
     async def scenario(client: DaedalusCloudClient):
-        await client.async_authenticate("user@example.com", "right")
+        await client.async_sign_in("user@example.com", "right")
         await client.async_get_devices()
 
     with pytest.raises(DaedalusAuthError):
         await _run(
             {"/accounts.login": login, "/accounts.getJWT": jwt, "/devices": devices}, scenario
         )
+
+
+
+# --- the renewal gate: what keeps a changed password from locking the account ---
+
+
+def _client_with_session(**kwargs) -> DaedalusCloudClient:
+    return DaedalusCloudClient(gigya_session=("st", "ss"), **kwargs)
+
+
+async def test_a_refused_session_stops_all_further_attempts() -> None:
+    client = _client_with_session()
+    get_jwt = AsyncMock(side_effect=DaedalusAuthError("403005"))
+    with patch.object(client, "async_get_jwt", get_jwt):
+        for _ in range(5):
+            with pytest.raises(DaedalusAuthError):
+                await client.async_get_token(refresh=True)
+    assert get_jwt.await_count == 1  # one try, then it waits for the person to sign in again
+
+
+async def test_a_locked_account_waits_before_trying_again() -> None:
+    client = _client_with_session()
+    get_jwt = AsyncMock(side_effect=DaedalusAccountLockedError("403120"))
+    with patch.object(client, "async_get_jwt", get_jwt):
+        for _ in range(3):
+            with pytest.raises(DaedalusAccountLockedError):
+                await client.async_get_token(refresh=True)
+    assert get_jwt.await_count == 1
+
+
+async def test_simultaneous_renewals_become_one() -> None:
+    """The local link, the cloud link and the coordinator asking at once: one renewal."""
+    client = _client_with_session()
+
+    async def renew() -> str:
+        await asyncio.sleep(0.01)
+        client._jwt_token = make_token(90 * DAY)
+        return client._jwt_token
+
+    get_jwt = AsyncMock(side_effect=renew)
+    with patch.object(client, "async_get_jwt", get_jwt):
+        await asyncio.gather(*(client.async_get_token(refresh=True) for _ in range(3)))
+    assert get_jwt.await_count == 1
+
+
+async def test_sign_out_ends_the_session() -> None:
+    seen: dict[str, str] = {}
+
+    async def logout(request: web.Request) -> web.Response:
+        seen["secret"] = request.query.get("secret", "")
+        seen["bearer"] = request.headers.get("Authorization", "")
+        return _gigya({"errorCode": 0})
+
+    async def scenario(client: DaedalusCloudClient):
+        client._session_token, client._session_secret = "st", "ss"
+        await client.async_sign_out()
+        return client.gigya_session
+
+    remaining = await _run({"/accounts.logout": logout}, scenario)
+    assert seen == {"secret": "ss", "bearer": "Bearer st"}
+    assert remaining is None
+
+
+def test_errors_never_carry_the_session_secret() -> None:
+    from custom_components.delonghi_daedalus.api.client import _redact
+
+    text = "500, url='https://accounts.eu1.gigya.com/accounts.getJWT?apiKey=k&secret=abc123&x=1'"
+    assert "abc123" not in _redact(text)

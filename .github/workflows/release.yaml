@@ -5,8 +5,8 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+# Nothing may write by default; only the release job below can.
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -16,8 +16,12 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # to create the GitHub release
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Build release zip
         run: |
@@ -42,7 +46,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
           generate_release_notes: true
           files: delonghi_daedalus.zip

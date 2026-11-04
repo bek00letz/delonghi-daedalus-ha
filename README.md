@@ -1,11 +1,11 @@
-# De’Longhi Daedalus for Home Assistant
+# De’Longhi My Coffee Lounge for Home Assistant
 
 [![HACS Custom Repository](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/default)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
 > **Status: early, in active development.** On an Eletta Ultra (ECAM 470.85): sign-in, power control over your home network (also without internet), finding the machine automatically, live status and alarms, and settings work. **Brewing from Home Assistant is not tested yet.** EU accounts only for now; [US owners can help](#help-wanted-us-accounts). Built on [sk7n4k3d’s original work](#credits).
 
-A Home Assistant integration for modern De’Longhi smart bean-to-cup espresso machines built on the next-generation **Daedalus** architecture (such as the **Eletta Ultra ECAM 470.85** and appliances running the official *My Coffee Lounge* application).
+A Home Assistant integration for De’Longhi bean-to-cup machines that use the *My Coffee Lounge* app, such as the **Eletta Ultra ECAM 470.85**. It replaces the app for everyday use: power, settings, status, alarms and drinks, over your home network. (Under the hood these machines run De’Longhi’s platform code-named *Daedalus*.)
 
 Built with low-latency local control, instant state synchronization, and zero cloud lock-in.
 
@@ -25,7 +25,7 @@ Built with low-latency local control, instant state synchronization, and zero cl
 ## Supported Appliances
 
 * **De’Longhi Eletta Ultra** (ECAM 470.85 series / ECAM47080)
-* Other modern De’Longhi appliances utilizing the **Daedalus** ecosystem and the official *My Coffee Lounge* app.
+* Other De’Longhi machines that use the *My Coffee Lounge* app are likely to work but untested. Reports welcome.
 
 *(Older De’Longhi machines that use the Coffee Link app are supported by [sk7n4k3d/delonghi-ha](https://github.com/sk7n4k3d/delonghi-ha).)*
 
@@ -43,7 +43,7 @@ Built with low-latency local control, instant state synchronization, and zero cl
    https://github.com/bek00letz/delonghi-daedalus-ha
    ```
 5. Choose **Integration** as the category and click **Add**.
-6. Search for **De’Longhi Daedalus** and click **Download**.
+6. Search for **De’Longhi My Coffee Lounge** and click **Download**.
 7. Restart Home Assistant.
 
 ### Method 2: Manual Installation
@@ -57,12 +57,13 @@ Built with low-latency local control, instant state synchronization, and zero cl
 ## Configuration
 
 1. In Home Assistant, navigate to **Settings** → **Devices & Services** → **Add Integration**.
-2. Search for **De’Longhi Daedalus**.
+2. Search for **De’Longhi My Coffee Lounge**.
 3. Enter your De’Longhi account credentials (*email* and *password* used in the My Coffee Lounge application).
-4. Leave **Coffee machine’s IP address** empty: Home Assistant finds the machine on your network (it takes a few seconds). If it can’t, it asks for the address, which your router’s device list shows.
-5. Click **Submit**. If several machines are linked to your account, choose one.
+4. Leave **Coffee machine’s IP address** empty and Home Assistant looks for the machine on your network (it takes a few seconds), or type its address.
+5. If several machines are linked to your account, choose one.
+6. **Confirm your machine.** Home Assistant lists the devices that look like a coffee machine and shows the address your machine reports to De’Longhi. Pick that one. Only the device you confirm ever receives your De’Longhi sign-in, and from then on Home Assistant talks only to that exact device.
 
-If your router later gives the machine a new address, Home Assistant finds it again on its own.
+If your router later gives the machine a new address, Home Assistant finds it again on its own, by recognising the confirmed machine (it sends nothing while searching). After resetting the machine, confirm it again under the integration’s **Configure** options.
 
 ---
 
@@ -71,13 +72,15 @@ If your router later gives the machine a new address, Home Assistant finds it ag
 | Platform | Entity | Description |
 | :--- | :--- | :--- |
 | **Switch** | Power | Wakes the machine or puts it into standby. Follows the machine’s own reports. |
-| **Switch** | Sound, Energy saving, Cup warmer | The machine’s on/off settings |
+| **Switch** | Sound, Energy saving | The machine’s on/off settings |
+| **Switch** | Cup warmer | For models with a heated cup plate. Created but switched off, because the machine doesn’t report whether it has one. Turn it on under the device’s entities if yours does. |
 | **Select** | Coffee temperature, Auto-off time, Water hardness | Settings, with the choices your machine reports |
 | **Select** | Brew profile | Which profile Home Assistant’s drinks use. Starts at the machine’s active profile and lists only profiles seen in use, so it never offers one that doesn’t exist. |
 | **Sensor** | Status | The machine’s own status, such as *Ready*, *Busy* or *Standby*. Raw report details are attributes. |
 | **Sensor** | Brew progress | How far the drink being made is, live |
 | **Sensor** | Last drink | The last drink made, also from the app or the machine, with its details as attributes |
 | **Sensor** | Descaling progress, Water filter used, Grounds container | Maintenance levels in percent |
+| **Sensor** | Water filter changed | When a new water filter was last registered on the machine (or in the app). Recorded automatically from the machine’s own filter count; *Unknown* until the first change Home Assistant sees. |
 | **Sensor** | Machine profile, Coffees brewed, Water used | The profile active on the machine, and lifetime counters |
 | **Binary sensor** | Water tank empty, Water tank missing, Grounds container full, Out of coffee beans, Descaling needed, Water filter, Brew unit cleaning, Cleaning needed, General fault | Alarms the machine reports. On means it needs attention. |
 | **Binary sensor** | 12 technical faults (grinder, heater sensor, fan, …) | Created but switched off. Turn them on under the device’s entities if you want them. |
@@ -101,11 +104,12 @@ Control over your home network keeps working when the internet or De’Longhi’
 ## Privacy & Security
 
 * Commands go straight from Home Assistant to the coffee machine over your home network, encrypted with TLS.
-* The machine accepts your De’Longhi account’s sign-in token as its key, so Home Assistant signs in to De’Longhi’s cloud to get one. The token lasts 90 days and is renewed automatically.
-* Home Assistant records your machine’s certificate the first time the machine accepts your token, and from then on only sends the token to a device presenting that exact certificate. If something else answers at the machine’s address, Home Assistant refuses it and shows a repair notice. After resetting or re-pairing the machine, turn on **Trust the coffee machine again** in the integration’s options.
-* When searching your network, Home Assistant only offers the token to devices with a coffee-machine certificate, and once your machine is known, it searches by certificate alone without sending the token anywhere.
-* Like every Home Assistant integration, your email, password and token are stored in Home Assistant’s configuration folder, which is not encrypted. Diagnostics downloads leave them out.
-* No analytics or tracking. Nothing is sent anywhere except De’Longhi’s own services and your machine.
+* The machine accepts your De’Longhi account’s sign-in token as its key, so Home Assistant gets one from De’Longhi’s cloud. The token lasts 90 days and is renewed automatically.
+* **You confirm which device is your machine before it receives the token.** The confirm screen shows the address your machine reports to De’Longhi, which nothing on your home network can fake. Afterwards Home Assistant sends the token only to a device presenting that exact certificate; if something else answers at the machine’s address, it refuses and shows a repair notice. Searching your network never sends the token.
+* **Your password isn’t stored.** It’s used once to sign in; Home Assistant keeps the De’Longhi sign-in session instead, in its private storage, and signs it out when you remove the integration. When De’Longhi ends the session, Home Assistant asks you to sign in again.
+* If De’Longhi refuses the sign-in, Home Assistant stops and asks you to sign in again instead of retrying, so it can’t lock your account.
+* **Brewing is guarded:** Home Assistant only starts a drink when the machine is on and ready, isn’t busy, and has no water tank, grounds or beans alert. Don’t expose the brew buttons or the power switch to voice assistants or to automations you haven’t thought through: they control a machine with hot water.
+* No analytics or tracking. Nothing is sent anywhere except De’Longhi’s own services and your machine. Logs leave out your machine’s serial number and addresses.
 
 ---
 
@@ -113,9 +117,15 @@ Control over your home network keeps working when the internet or De’Longhi’
 
 The integration works with EU De’Longhi accounts. US accounts use different servers. The US addresses for the device list and live machine data are already known (from the app), but the **sign-in key** for US accounts comes from De’Longhi’s remote settings at run time and isn’t in the app itself.
 
-If you have a US account, you can unlock US support with one capture: route your phone through [mitmproxy](https://mitmproxy.org) (a normal Wi-Fi proxy is enough), sign in to the My Coffee Lounge app, and note the `apiKey` value and server name of the `accounts.login` request (a server like `accounts.us1.gigya.com`). The `apiKey` is the app’s public key, not your password. Please **don’t** share your password, tokens or the full capture. Open an issue with just those two values and your machine model.
+If you have a US account, you can unlock US support with one capture, without risking your account:
 
-One catch: the app normally refuses the proxy’s certificate, so this needs a phone or app build that trusts user certificates (on Android, typically a patched app). Its connection to Amazon’s live service refuses the proxy even then, and that’s fine, because only the sign-in request is needed.
+1. Use the official My Coffee Lounge app (on a spare phone or an emulator if you can) and route it through [mitmproxy](https://mitmproxy.org) (a normal Wi-Fi proxy is enough).
+2. **Sign in with a made-up email and password.** The sign-in fails, but the request still carries what’s needed, and your real password never passes through the proxy.
+3. From the `accounts.login` request, note the `apiKey` value and the server name (like `accounts.us1.gigya.com`). The `apiKey` is the app’s public key, not a secret of yours.
+4. Remove the proxy’s certificate from the phone and delete the capture.
+5. Open an issue with just those two values and your machine model. Never share passwords, tokens or captures.
+
+One catch: the app normally refuses the proxy’s certificate, so this needs a phone or emulator that trusts user certificates. Don’t install modified versions of the app from unknown sources to get around it.
 
 ---
 

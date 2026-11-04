@@ -3,6 +3,8 @@
 [![HACS Custom Repository](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/default)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
+>This repo builds on top of the work by `sk7n4k3d` and is currently a work in progress.
+
 A Home Assistant integration for modern De’Longhi smart bean-to-cup espresso machines built on the next-generation **Daedalus** architecture (such as the **Eletta Ultra ECAM 470.85** and appliances running the official *My Coffee Lounge* application).
 
 Built with low-latency local control, instant state synchronization, and zero cloud lock-in.

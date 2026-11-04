@@ -25,7 +25,11 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
 
 
 class DaedalusAuthError(Exception):
-    """Raised when authentication with Gigya SSO fails."""
+    """De'Longhi rejected the email and password."""
+
+
+class DaedalusAccountLockedError(DaedalusAuthError):
+    """De'Longhi paused sign-ins for the account after too many attempts."""
 
 
 class DaedalusConnectionError(Exception):
@@ -34,6 +38,26 @@ class DaedalusConnectionError(Exception):
 
 class DaedalusApiError(Exception):
     """Raised when an API endpoint returns an unexpected error."""
+
+
+# Gigya error codes that mean the credentials themselves were refused.
+GIGYA_WRONG_CREDENTIALS = {403042, 403047}
+# Too many attempts: the account is temporarily locked or wants a CAPTCHA.
+GIGYA_LOCKED = {403120, 401020, 401021, 401030}
+
+
+def _raise_for_gigya_error(data: dict[str, Any], step: str) -> None:
+    """Turn a Gigya error answer into the right exception for its meaning."""
+    code = data.get("errorCode", 0)
+    if not code:
+        return
+    details = data.get("errorDetails") or data.get("errorMessage") or "no details"
+    message = f"De'Longhi {step} failed (code {code}): {details}"
+    if code in GIGYA_LOCKED:
+        raise DaedalusAccountLockedError(message)
+    if code in GIGYA_WRONG_CREDENTIALS:
+        raise DaedalusAuthError(message)
+    raise DaedalusApiError(message)
 
 
 async def _read_json(resp: aiohttp.ClientResponse) -> dict[str, Any]:
@@ -65,6 +89,7 @@ class DaedalusCloudClient:
         self._owns_session = False
         self._jwt_token: str | None = None
         self._session_secret: str | None = None
+        self._session_token: str | None = None
         self._credentials: tuple[str, str] | None = None
 
     async def async_authenticate(self, username: str, password: str) -> None:
@@ -125,47 +150,48 @@ class DaedalusCloudClient:
         except (aiohttp.ClientError, TimeoutError) as err:
             raise DaedalusConnectionError(f"Network error during Gigya login: {err}") from err
 
-        error_code = data.get("errorCode", 0)
-        if error_code != 0:
-            error_details = data.get("errorDetails") or data.get("errorMessage", "Unknown auth failure")
-            raise DaedalusAuthError(f"Gigya authentication failed (code {error_code}): {error_details}")
+        _raise_for_gigya_error(data, "sign-in")
 
-        session_info = data.get("sessionInfo")
-        if not session_info or "sessionSecret" not in session_info:
-            raise DaedalusAuthError("Gigya login response missing sessionInfo or sessionSecret")
+        session_info = data.get("sessionInfo") or {}
+        if not session_info.get("sessionSecret") or not session_info.get("sessionToken"):
+            raise DaedalusApiError("De'Longhi sign-in answer had no session")
 
         self._session_secret = session_info["sessionSecret"]
+        self._session_token = session_info["sessionToken"]
         return self._session_secret
 
-    async def async_get_jwt(self, session_secret: str | None = None) -> str:
-        """Exchange session secret for AWS RS256 JWT bearer token."""
-        secret = session_secret or self._session_secret
-        if not secret:
-            raise DaedalusAuthError("Cannot request JWT without an active session secret")
+    async def async_get_jwt(self) -> str:
+        """Exchange the sign-in session for the 90-day account token.
+
+        Sent exactly as the My Coffee Lounge app does (seen 2026-11-04): the
+        session secret as a query parameter and the session token as a
+        Bearer header. The secret alone is refused with 403010.
+        """
+        if not self._session_secret or not self._session_token:
+            raise DaedalusAuthError("Cannot request a token without signing in first")
 
         session = await self._get_session()
         params = {
             "apiKey": GIGYA_API_KEY,
-            "secret": secret,
+            "secret": self._session_secret,
             "expiration": str(GIGYA_JWT_EXPIRATION),
-            "fields": "profile.firstName,profile.lastName",
             "httpStatusCodes": "true",
         }
+        headers = {"Authorization": f"Bearer {self._session_token}"}
 
         try:
-            async with session.post(GIGYA_JWT_URL, params=params, timeout=REQUEST_TIMEOUT) as resp:
+            async with session.post(
+                GIGYA_JWT_URL, params=params, headers=headers, timeout=REQUEST_TIMEOUT
+            ) as resp:
                 data = await _read_json(resp)
         except (aiohttp.ClientError, TimeoutError) as err:
             raise DaedalusConnectionError(f"Network error during JWT exchange: {err}") from err
 
-        error_code = data.get("errorCode", 0)
-        if error_code != 0:
-            error_details = data.get("errorDetails") or data.get("errorMessage", "Unknown failure")
-            raise DaedalusAuthError(f"Gigya JWT exchange failed (code {error_code}): {error_details}")
+        _raise_for_gigya_error(data, "token request")
 
         id_token = data.get("id_token")
         if not id_token:
-            raise DaedalusAuthError("Gigya getJWT response did not contain id_token")
+            raise DaedalusApiError("De'Longhi token answer had no token")
 
         self._jwt_token = id_token
         return self._jwt_token

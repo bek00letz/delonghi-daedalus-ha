@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.delonghi_daedalus.api.client import (
+    DaedalusAccountLockedError,
     DaedalusAuthError,
     DaedalusConnectionError,
 )
@@ -104,6 +105,21 @@ async def test_setup_wrong_password_keeps_email(hass: HomeAssistant) -> None:
     }
     assert suggested.get(CONF_USERNAME) == EMAIL
     assert CONF_PASSWORD not in suggested
+
+
+async def test_setup_locked_account_says_so(hass: HomeAssistant) -> None:
+    mock, _ = _cloud(authenticate=DaedalusAccountLockedError("403120"))
+    try:
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: "pw"}
+        )
+    finally:
+        mock.stop()
+
+    assert result["errors"] == {"base": "account_locked"}
 
 
 async def test_setup_offline_is_cannot_connect(hass: HomeAssistant) -> None:

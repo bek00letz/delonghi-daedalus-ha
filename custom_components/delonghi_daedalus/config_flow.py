@@ -19,6 +19,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .api.client import (
+    DaedalusAccountLockedError,
     DaedalusApiError,
     DaedalusAuthError,
     DaedalusCloudClient,
@@ -71,12 +72,18 @@ class DaedalusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             await client.async_authenticate(username, password)
             devices = await client.async_get_devices()
+        except DaedalusAccountLockedError as err:
+            _LOGGER.warning("De'Longhi paused sign-ins for this account: %s", err)
+            return [], {"base": "account_locked"}
         except DaedalusAuthError as err:
-            _LOGGER.info("De'Longhi sign-in rejected: %s", err)
+            _LOGGER.warning("De'Longhi sign-in rejected: %s", err)
             return [], {"base": "invalid_auth"}
-        except (DaedalusConnectionError, DaedalusApiError) as err:
+        except DaedalusConnectionError as err:
             _LOGGER.warning("Couldn't reach De'Longhi cloud during sign-in: %s", err)
             return [], {"base": "cannot_connect"}
+        except DaedalusApiError as err:
+            _LOGGER.warning("De'Longhi sign-in failed: %s", err)
+            return [], {"base": "unknown"}
         except Exception:
             _LOGGER.exception("Unexpected error during De'Longhi sign-in")
             return [], {"base": "unknown"}

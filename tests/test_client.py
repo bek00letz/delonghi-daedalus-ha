@@ -17,6 +17,7 @@ import pytest
 
 from custom_components.delonghi_daedalus.api import client as client_module
 from custom_components.delonghi_daedalus.api.client import (
+    DaedalusAccountLockedError,
     DaedalusApiError,
     DaedalusAuthError,
     DaedalusCloudClient,
@@ -38,6 +39,27 @@ def _gigya(body: dict[str, Any], status: int = 200) -> web.Response:
         content_type=GIGYA_CONTENT_TYPE,
         charset="utf-8",
     )
+
+
+def _session(n: int | str = 1) -> web.Response:
+    """A successful sign-in answer, with both halves of the session."""
+    return _gigya(
+        {"errorCode": 0, "sessionInfo": {"sessionSecret": f"secret{n}", "sessionToken": f"st{n}"}}
+    )
+
+
+def _strict_jwt(request: web.Request) -> web.Response:
+    """Answer getJWT like the real service: the secret alone is refused with 403010.
+
+    Hands out "jwt-<n>" for a matching secret<n> + Bearer st<n> pair.
+    """
+    secret = request.query.get("secret", "")
+    bearer = request.headers.get("Authorization", "")
+    n = secret.removeprefix("secret")
+    if not secret.startswith("secret") or bearer != f"Bearer st{n}":
+        return _gigya({"errorCode": 403010, "errorDetails": "Invalid parameter: secret"}, 403)
+    assert "fields" not in request.query, "the token must not carry profile fields"
+    return _gigya({"errorCode": 0, "id_token": f"jwt-{n}"})
 
 
 async def _run(routes: dict[str, Any], scenario) -> Any:
@@ -65,13 +87,13 @@ async def test_login_and_discovery_succeed_with_gigya_content_type() -> None:
     """A correct password goes all the way through to the device list."""
 
     async def login(_: web.Request) -> web.Response:
-        return _gigya({"errorCode": 0, "sessionInfo": {"sessionSecret": "secret"}})
+        return _session()
 
-    async def jwt(_: web.Request) -> web.Response:
-        return _gigya({"errorCode": 0, "id_token": "jwt"})
+    async def jwt(request: web.Request) -> web.Response:
+        return _strict_jwt(request)
 
     async def devices(request: web.Request) -> web.Response:
-        assert request.headers["Authorization"] == "Bearer jwt"
+        assert request.headers["Authorization"] == "Bearer jwt-1"
         return web.json_response(
             {
                 "ownedByMe": [
@@ -112,17 +134,33 @@ async def test_wrong_password_is_an_auth_error_not_a_connection_error() -> None:
         await _run({"/accounts.login": login}, scenario)
 
 
-async def test_jwt_error_is_an_auth_error() -> None:
-    """A rejected session secret during the token exchange is an auth problem."""
+async def test_token_request_failure_is_not_a_password_error() -> None:
+    """A refused token request means something else went wrong, not a wrong password."""
+
+    async def login(_: web.Request) -> web.Response:
+        return _session()
 
     async def jwt(_: web.Request) -> web.Response:
         return _gigya({"errorCode": 403005, "errorDetails": "Unauthorized user"}, 403)
 
     async def scenario(client: DaedalusCloudClient):
-        await client.async_get_jwt("stale-secret")
+        await client.async_authenticate("user@example.com", "right")
 
-    with pytest.raises(DaedalusAuthError, match="403005"):
-        await _run({"/accounts.getJWT": jwt}, scenario)
+    with pytest.raises(DaedalusApiError, match="403005") as err:
+        await _run({"/accounts.login": login, "/accounts.getJWT": jwt}, scenario)
+    assert not isinstance(err.value, DaedalusAuthError)
+
+
+@pytest.mark.parametrize("code", [403120, 401020])
+async def test_too_many_attempts_is_account_locked(code: int) -> None:
+    async def login(_: web.Request) -> web.Response:
+        return _gigya({"errorCode": code, "errorDetails": "Account temporarily locked"}, 403)
+
+    async def scenario(client: DaedalusCloudClient):
+        await client.async_login("user@example.com", "pw")
+
+    with pytest.raises(DaedalusAccountLockedError):
+        await _run({"/accounts.login": login}, scenario)
 
 
 async def test_non_json_body_is_an_api_error() -> None:
@@ -156,14 +194,14 @@ async def test_expired_token_is_renewed_silently() -> None:
 
     async def login(_: web.Request) -> web.Response:
         calls["login"] += 1
-        return _gigya({"errorCode": 0, "sessionInfo": {"sessionSecret": f"s{calls['login']}"}})
+        return _session(calls["login"])
 
     async def jwt(request: web.Request) -> web.Response:
-        return _gigya({"errorCode": 0, "id_token": f"jwt-{request.query['secret']}"})
+        return _strict_jwt(request)
 
     async def devices(request: web.Request) -> web.Response:
         calls["devices"] += 1
-        if request.headers["Authorization"] == "Bearer jwt-s1":
+        if request.headers["Authorization"] == "Bearer jwt-1":
             return web.json_response({"message": "Forbidden"}, status=403)
         return web.json_response({"ownedByMe": [{"serialNumber": "SN1"}]})
 
@@ -182,10 +220,10 @@ async def test_token_rejected_twice_is_an_auth_error() -> None:
     """If a fresh sign-in still doesn't help, stop and report it instead of looping."""
 
     async def login(_: web.Request) -> web.Response:
-        return _gigya({"errorCode": 0, "sessionInfo": {"sessionSecret": "s"}})
+        return _session()
 
-    async def jwt(_: web.Request) -> web.Response:
-        return _gigya({"errorCode": 0, "id_token": "jwt"})
+    async def jwt(request: web.Request) -> web.Response:
+        return _strict_jwt(request)
 
     async def devices(_: web.Request) -> web.Response:
         return web.json_response({"message": "Unauthorized"}, status=401)

@@ -32,8 +32,9 @@
       "invalid_auth": "Invalid email or password. Please verify your credentials and try again.",
       "cannot_connect": "Unable to connect to De’Longhi cloud services. Please check your network connection.",
       "no_devices": "No smart coffee machines found linked to this De’Longhi account.",
-      "unknown": "An unexpected error occurred while communicating with De’Longhi services.",
-      "device_not_on_account": "This coffee machine is no longer linked to {username}. Check that it still appears in the My Coffee Lounge app."
+      "unknown": "De’Longhi’s sign-in service gave an unexpected answer. Try again in a moment. If it keeps happening, the Home Assistant log has the details.",
+      "device_not_on_account": "This coffee machine is no longer linked to {username}. Check that it still appears in the My Coffee Lounge app.",
+      "account_locked": "De’Longhi has paused sign-ins for this account after too many attempts. Sign in once in the My Coffee Lounge app, then try again in a few minutes."
     },
     "abort": {
       "already_configured": "This coffee machine is already configured in Home Assistant.",

@@ -7,6 +7,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -14,6 +15,32 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import DaedalusCoordinator
+
+# Alarm flags from the machine's StatusService report: (flag, translation key, on by default).
+# Everyday ones are on by default; technical faults are created but switched off.
+ALARMS: tuple[tuple[str, str, bool], ...] = (
+    ("TankLevel", "alarm_water_tank_empty", True),
+    ("TankPresence", "alarm_water_tank_missing", True),
+    ("Waste", "alarm_grounds_container_full", True),
+    ("NoCoffee", "alarm_beans_empty", True),
+    ("Descale", "alarm_descale", True),
+    ("Filter", "alarm_water_filter", True),
+    ("BrewUnitClean", "alarm_brew_unit_clean", True),
+    ("Clean", "alarm_clean", True),
+    ("General", "alarm_general", True),
+    ("GroundFine", "alarm_grind_too_fine", False),
+    ("BrokenGrinder", "alarm_grinder", False),
+    ("Infuser", "alarm_infuser", False),
+    ("Imbocco", "alarm_imbocco", False),
+    ("MotorPos", "alarm_motor_position", False),
+    ("HeaterNTC", "alarm_heater_sensor", False),
+    ("Bubble", "alarm_air_in_circuit", False),
+    ("Drain", "alarm_drain", False),
+    ("Fan", "alarm_fan", False),
+    ("Fridge", "alarm_milk_fridge", False),
+    ("UIMemory", "alarm_display_memory", False),
+    ("WifiDown", "alarm_wifi", False),
+)
 
 
 async def async_setup_entry(
@@ -28,6 +55,10 @@ async def async_setup_entry(
         [
             DaedalusLocalConnectivityBinarySensor(coordinator),
             DaedalusCloudConnectivityBinarySensor(coordinator),
+            *(
+                DaedalusAlarmBinarySensor(coordinator, flag, key, enabled)
+                for flag, key, enabled in ALARMS
+            ),
         ]
     )
 
@@ -80,3 +111,28 @@ class DaedalusCloudConnectivityBinarySensor(DaedalusBaseBinarySensor):
     def is_on(self) -> bool:
         """Return True if cloud status is reported online."""
         return self.coordinator.data.is_cloud_online
+
+
+
+class DaedalusAlarmBinarySensor(DaedalusBaseBinarySensor):
+    """One alarm flag from the machine's status report. On means attention needed."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(
+        self, coordinator: DaedalusCoordinator, flag: str, key: str, enabled: bool
+    ) -> None:
+        """Initialize the alarm sensor."""
+        super().__init__(coordinator, key)
+        self._flag = flag
+        self._attr_entity_registry_enabled_default = enabled
+        if not enabled:
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the alarm flag; unknown until the machine has sent a report."""
+        status = self.coordinator.data.status
+        if status is None or self._flag not in status.alarms:
+            return None
+        return status.alarms[self._flag]

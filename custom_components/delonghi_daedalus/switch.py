@@ -61,3 +61,4 @@ class DaedalusPowerSwitch(CoordinatorEntity[DaedalusCoordinator], SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Put machine to sleep / standby."""
         await self.coordinator.async_turn_off()
+

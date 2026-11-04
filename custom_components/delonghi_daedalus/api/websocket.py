@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 import json
 import logging
 import random
@@ -36,6 +36,28 @@ from .models import BeverageParameters, BeverageReport, MachineSettings
 
 _LOGGER = logging.getLogger(__name__)
 
+# Called with refresh=True after the machine rejects a token, to get a fresh one.
+TokenProvider = Callable[[bool], Awaitable[str]]
+
+
+class DaedalusLocalAuthError(Exception):
+    """The machine answered the auth handshake with something other than OK."""
+
+
+class DaedalusCommandError(Exception):
+    """A command was not carried out. ``reason`` says why, in one word.
+
+    not_connected: no signed-in local session to send it on
+    rejected:      the machine answered KO (busy, or already in that state)
+    unauthorized:  the machine refused the session for this command
+    no_reply:      the machine did not answer in time
+    connection_lost: the connection dropped before an answer came
+    """
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+
 
 def generate_request_id(length: int = 5) -> str:
     """Generate alphanumeric request nonce matching official app."""
@@ -50,7 +72,7 @@ class DaedalusLocalWebSocket:
         self,
         host: str,
         serial_number: str,
-        auth_token: str | None = None,
+        token_provider: TokenProvider,
         port: int = DEFAULT_WS_PORT,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
@@ -58,7 +80,8 @@ class DaedalusLocalWebSocket:
         self._host = host
         self._port = port
         self._serial_number = serial_number
-        self._auth_token = auth_token or ""
+        self._token_provider = token_provider
+        self._refresh_token = False
         self._session = session
         self._owns_session = False
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -67,6 +90,8 @@ class DaedalusLocalWebSocket:
         self._should_run = False
         self._loop_task: asyncio.Task[None] | None = None
         self._callbacks: list[Callable[[dict[str, Any]], None]] = []
+        # Commands waiting for the machine's answer, by RequestId.
+        self._pending: dict[str, tuple[str, asyncio.Future[dict[str, Any]]]] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -140,6 +165,7 @@ class DaedalusLocalWebSocket:
         """Close active WebSocket connection."""
         self._is_connected = False
         self._connection_id = None
+        self._fail_pending("connection_lost")
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
@@ -153,6 +179,18 @@ class DaedalusLocalWebSocket:
                 delay = DEFAULT_RETRY_DELAY
             except asyncio.CancelledError:
                 break
+            except DaedalusLocalAuthError as err:
+                await self._disconnect()
+                if not self._refresh_token:
+                    # Most likely an expired token: get a fresh one and retry at once.
+                    _LOGGER.debug("Machine rejected the token (%s); retrying with a fresh one", err)
+                    self._refresh_token = True
+                    continue
+                _LOGGER.warning(
+                    "Coffee machine at %s rejected a fresh De'Longhi token: %s", self._host, err
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_RECONNECT_DELAY)
             except Exception as err:
                 _LOGGER.debug("Daedalus local WebSocket connection error (%s): %s", self._host, err)
                 await self._disconnect()
@@ -169,15 +207,17 @@ class DaedalusLocalWebSocket:
         async with session.ws_connect(
             url,
             ssl=ssl_ctx,
-            timeout=DEFAULT_TIMEOUT,
+            timeout=aiohttp.ClientWSTimeout(ws_close=DEFAULT_TIMEOUT),
             heartbeat=30.0,
         ) as ws:
             self._ws = ws
-            # Step 1: Send authentication handshake
+            # Step 1: authenticate with the account token. The machine checks
+            # it itself and answers {"Message": "auth", "Response": "OK", "ConnectionId": n}.
+            token = await self._token_provider(self._refresh_token)
             auth_payload = {
                 "Message": MESSAGE_AUTH,
                 "SerialNo": self._serial_number,
-                "AuthToken": self._auth_token,
+                "AuthToken": token,
             }
             await ws.send_json(auth_payload)
             _LOGGER.debug("Sent auth handshake for serial %s", self._serial_number)
@@ -198,35 +238,73 @@ class DaedalusLocalWebSocket:
         """Parse and route messages from the appliance."""
         _LOGGER.debug("Received Daedalus message: %s", data)
 
-        # Check for authentication response
-        if "ConnectionId" in data and not self._is_connected:
+        if data.get("Message") == MESSAGE_AUTH:
+            if data.get("Response") != RESPONSE_OK or "ConnectionId" not in data:
+                raise DaedalusLocalAuthError(f"auth answered {data.get('Response')!r}")
             self._connection_id = data["ConnectionId"]
             self._is_connected = True
+            self._refresh_token = False
             _LOGGER.info(
-                "Successfully authenticated with Daedalus appliance on LAN (ConnectionId: %s)",
+                "Connected to coffee machine at %s over the home network (ConnectionId %s)",
+                self._host,
                 self._connection_id,
             )
 
+        self._resolve_pending(data)
         self._notify_callbacks(data)
 
-    async def async_send_command(self, payload: dict[str, Any]) -> bool:
-        """Send an arbitrary JSON command over the authenticated socket."""
+    def _resolve_pending(self, data: dict[str, Any]) -> None:
+        """Hand a reply to the command waiting for it."""
+        request_id = data.get("RequestId")
+        if isinstance(request_id, str) and request_id in self._pending:
+            _, future = self._pending.pop(request_id)
+            if not future.done():
+                future.set_result(data)
+            return
+        # The machine answers a refused session without the RequestId:
+        # {"Message": "MachineUI", "Response": "UNAUTHORIZED"}.
+        if data.get("Response") == "UNAUTHORIZED":
+            for rid, (message, future) in list(self._pending.items()):
+                if message == data.get("Message") and not future.done():
+                    self._pending.pop(rid)
+                    future.set_exception(DaedalusCommandError("unauthorized"))
+
+    def _fail_pending(self, reason: str) -> None:
+        """Fail every command still waiting, e.g. when the connection drops."""
+        pending, self._pending = self._pending, {}
+        for _, future in pending.values():
+            if not future.done():
+                future.set_exception(DaedalusCommandError(reason))
+
+    async def async_send_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Send a command and wait for the machine to answer OK.
+
+        Returns the machine's reply. Raises DaedalusCommandError otherwise.
+        """
         if not self.is_connected or self._ws is None:
-            _LOGGER.warning("Cannot send command: local WebSocket is not connected to %s", self._host)
-            return False
+            raise DaedalusCommandError("not_connected", self._host)
 
-        if "ConnectionId" not in payload and self._connection_id is not None:
-            payload["ConnectionId"] = self._connection_id
-
+        payload = {**payload, "ConnectionId": self._connection_id}
+        request_id: str = payload["RequestId"]
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = (payload["Message"], future)
         try:
             await self._ws.send_json(payload)
-            _LOGGER.debug("Dispatched LAN command: %s", payload)
-            return True
-        except Exception as err:
-            _LOGGER.error("Failed to send Daedalus command over WebSocket: %s", err)
-            return False
+            _LOGGER.debug("Sent local command: %s", payload)
+            async with asyncio.timeout(DEFAULT_TIMEOUT):
+                reply = await future
+        except TimeoutError as err:
+            raise DaedalusCommandError("no_reply", payload["Message"]) from err
+        except (aiohttp.ClientError, ConnectionError) as err:
+            raise DaedalusCommandError("connection_lost", str(err)) from err
+        finally:
+            self._pending.pop(request_id, None)
 
-    async def async_turn_on(self) -> bool:
+        if reply.get("Response") != RESPONSE_OK:
+            raise DaedalusCommandError("rejected", str(reply.get("Response")))
+        return reply
+
+    async def async_turn_on(self) -> dict[str, Any]:
         """Wake machine from standby mode."""
         payload = {
             "Message": MESSAGE_MACHINE_UI,
@@ -236,7 +314,7 @@ class DaedalusLocalWebSocket:
         }
         return await self.async_send_command(payload)
 
-    async def async_turn_off(self) -> bool:
+    async def async_turn_off(self) -> dict[str, Any]:
         """Put machine into standby / sleep mode."""
         payload = {
             "Message": MESSAGE_MACHINE_UI,
@@ -251,7 +329,7 @@ class DaedalusLocalWebSocket:
         recipe_id: int,
         profile_id: int = 1,
         parameters: BeverageParameters | None = None,
-    ) -> bool:
+    ) -> dict[str, Any]:
         """Dispatch drink brewing request with customized parameters."""
         payload: dict[str, Any] = {
             "Message": MESSAGE_BEVERAGE_REQUEST,
@@ -265,7 +343,7 @@ class DaedalusLocalWebSocket:
 
         return await self.async_send_command(payload)
 
-    async def async_set_settings(self, settings: MachineSettings) -> bool:
+    async def async_set_settings(self, settings: MachineSettings) -> dict[str, Any]:
         """Configure machine settings (temperature, auto-off, water hardness)."""
         payload = {
             "Message": MESSAGE_SET_MACHINE_SETTINGS,
@@ -274,3 +352,4 @@ class DaedalusLocalWebSocket:
             "Settings": settings.to_dict(),
         }
         return await self.async_send_command(payload)
+

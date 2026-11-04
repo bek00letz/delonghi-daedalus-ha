@@ -97,3 +97,4 @@ This integration respects user privacy:
 ## License
 
 Released under the [MIT License](LICENSE).
+

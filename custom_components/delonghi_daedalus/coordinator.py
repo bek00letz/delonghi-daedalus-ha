@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 import logging
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import (
@@ -22,10 +24,10 @@ from .api.models import (
     DaedalusAppliance,
     MachineSettings,
     MachineState,
+    MachineStatus,
 )
-from .api.websocket import DaedalusLocalWebSocket
+from .api.websocket import DaedalusCommandError, DaedalusLocalWebSocket
 from .const import (
-    CONF_AUTH_TOKEN,
     CONF_DEVICE_IP,
     CONF_MODEL,
     CONF_SERIAL_NUMBER,
@@ -54,6 +56,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
     def __init__(
         self,
         hass: HomeAssistant,
+        config_entry: ConfigEntry,
         cloud_client: DaedalusCloudClient,
         appliance: DaedalusAppliance,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
@@ -62,6 +65,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=f"{DOMAIN}_{appliance.serial_number}",
             update_interval=timedelta(seconds=poll_interval),
         )
@@ -81,15 +85,17 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self._local_ws = DaedalusLocalWebSocket(
             host=host,
             serial_number=self.appliance.serial_number,
-            auth_token=self.appliance.auth_token,
+            token_provider=self.cloud_client.async_get_token,
         )
         self._unregister_ws_cb = self._local_ws.register_callback(self._handle_ws_message)
 
     async def async_start(self) -> None:
         """Start local WebSocket listener and initial coordinator refresh."""
+        # Check the cloud sign-in first: if it fails, setup stops before any
+        # local connection is opened, so nothing is left running.
+        await self.async_config_entry_first_refresh()
         if self._local_ws:
             await self._local_ws.async_start()
-        await self.async_refresh()
 
     async def async_stop(self) -> None:
         """Stop local WebSocket and release network resources."""
@@ -115,10 +121,15 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         """Handle incoming asynchronous event messages from appliance."""
         msg_type = data.get("Message")
 
-        # 1. Power / Standby transition report
-        if msg_type == RESPONSE_MACHINE_UI:
+        # 0. The machine's own status report: the source of truth when it comes.
+        if (status := MachineStatus.from_message(data)) is not None:
+            self.state.update_from_status(status)
+            self.async_set_updated_data(self.state)
+
+        # 1. Power / Standby transition report (only an OK means it happened)
+        elif msg_type == RESPONSE_MACHINE_UI:
             turn_on_off = data.get("TurnOnOff")
-            if turn_on_off is not None:
+            if turn_on_off is not None and data.get("Response") == RESPONSE_OK:
                 self.state.update_from_ui_response(int(turn_on_off))
                 _LOGGER.debug("Power state updated via WebSocket: %s", self.state.is_on)
                 self.async_set_updated_data(self.state)
@@ -162,7 +173,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
                     self.state.operational_state = STATE_STANDBY if not self.state.is_on else STATE_READY
 
         except DaedalusAuthError as err:
-            raise ConfigEntryAuthFailed(f"De'Longhi cloud session expired: {err}") from err
+            raise ConfigEntryAuthFailed(f"De'Longhi no longer accepts the saved password: {err}") from err
         except (DaedalusConnectionError, DaedalusApiError) as err:
             _LOGGER.debug("Cloud poll failed (continuing with local state): %s", err)
 
@@ -174,56 +185,50 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
 
         return self.state
 
-    async def async_turn_on(self) -> bool:
-        """Power on / wake coffee machine."""
-        success = False
-        if self._local_ws and self._local_ws.is_connected:
-            success = await self._local_ws.async_turn_on()
-        if success:
-            self.state.is_on = True
-            self.state.operational_state = STATE_READY
-            self.async_set_updated_data(self.state)
-        return success
+    async def _async_command(self, send: Callable[[DaedalusLocalWebSocket], Awaitable[Any]]) -> None:
+        """Run one local command; turn a failure into a message the person can act on."""
+        if not self._local_ws:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="command_no_local_address"
+            )
+        try:
+            await send(self._local_ws)
+        except DaedalusCommandError as err:
+            _LOGGER.debug("Local command failed: %s", err)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key=f"command_{err.reason}"
+            ) from err
 
-    async def async_turn_off(self) -> bool:
-        """Put coffee machine into standby / sleep."""
-        success = False
-        if self._local_ws and self._local_ws.is_connected:
-            success = await self._local_ws.async_turn_off()
-        if success:
-            self.state.is_on = False
-            self.state.operational_state = STATE_STANDBY
-            self.async_set_updated_data(self.state)
-        return success
+    async def async_turn_on(self) -> None:
+        """Wake the coffee machine from standby."""
+        await self._async_command(lambda ws: ws.async_turn_on())
+        self.state.update_from_ui_response(TURN_ON_OFF_WAKE)
+        self.async_set_updated_data(self.state)
+
+    async def async_turn_off(self) -> None:
+        """Put the coffee machine into standby."""
+        await self._async_command(lambda ws: ws.async_turn_off())
+        self.state.update_from_ui_response(TURN_ON_OFF_STANDBY)
+        self.async_set_updated_data(self.state)
 
     async def async_brew(
         self,
         recipe_id: int,
         profile_id: int = 1,
         parameters: BeverageParameters | None = None,
-    ) -> bool:
-        """Trigger beverage dispensing."""
-        if not self._local_ws or not self._local_ws.is_connected:
-            _LOGGER.warning("Cannot brew beverage: local connection is not active")
-            return False
-
+    ) -> None:
+        """Start brewing a drink."""
+        await self._async_command(lambda ws: ws.async_brew(recipe_id, profile_id, parameters))
         self.state.operational_state = STATE_BREWING
         self.async_set_updated_data(self.state)
-        return await self._local_ws.async_brew(recipe_id, profile_id, parameters)
 
-    async def async_set_settings(self, settings: MachineSettings) -> bool:
-        """Configure appliance settings."""
-        if not self._local_ws or not self._local_ws.is_connected:
-            _LOGGER.warning("Cannot apply settings: local connection is not active")
-            return False
-
-        success = await self._local_ws.async_set_settings(settings)
-        if success:
-            if settings.water_temperature is not None:
-                self.state.settings.water_temperature = settings.water_temperature
-            if settings.auto_off is not None:
-                self.state.settings.auto_off = settings.auto_off
-            if settings.water_hardness is not None:
-                self.state.settings.water_hardness = settings.water_hardness
-            self.async_set_updated_data(self.state)
-        return success
+    async def async_set_settings(self, settings: MachineSettings) -> None:
+        """Change machine settings."""
+        await self._async_command(lambda ws: ws.async_set_settings(settings))
+        if settings.water_temperature is not None:
+            self.state.settings.water_temperature = settings.water_temperature
+        if settings.auto_off is not None:
+            self.state.settings.auto_off = settings.auto_off
+        if settings.water_hardness is not None:
+            self.state.settings.water_hardness = settings.water_hardness
+        self.async_set_updated_data(self.state)

@@ -7,12 +7,17 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import aiohttp_client
 
-from .api.client import DaedalusCloudClient
+from .api.client import (
+    DaedalusApiError,
+    DaedalusAuthError,
+    DaedalusCloudClient,
+    DaedalusConnectionError,
+)
 from .api.models import DaedalusAppliance
 from .const import (
-    CONF_AUTH_TOKEN,
     CONF_DEVICE_IP,
     CONF_MODEL,
     CONF_PASSWORD,
@@ -43,9 +48,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
 
-    # Authenticate with cloud
-    await cloud_client.async_login(username, password)
-    await cloud_client.async_get_jwt()
+    # Authenticate with cloud. Network trouble at boot is temporary, so Home
+    # Assistant retries on its own; rejected credentials will not fix themselves.
+    try:
+        await cloud_client.async_authenticate(username, password)
+    except DaedalusAuthError as err:
+        # Home Assistant shows a "sign in again" prompt for this entry.
+        raise ConfigEntryAuthFailed(
+            "De’Longhi no longer accepts the saved password"
+        ) from err
+    except (DaedalusConnectionError, DaedalusApiError) as err:
+        raise ConfigEntryNotReady(f"Couldn’t reach De’Longhi cloud: {err}") from err
 
     # Determine active IP (options take precedence over data)
     device_ip = entry.options.get(CONF_DEVICE_IP, entry.data.get(CONF_DEVICE_IP)) or None
@@ -58,11 +71,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         sku="",
         status="ONLINE",
         local_ip=device_ip,
-        auth_token=entry.data.get(CONF_AUTH_TOKEN),
     )
 
     coordinator = DaedalusCoordinator(
         hass=hass,
+        config_entry=entry,
         cloud_client=cloud_client,
         appliance=appliance,
         poll_interval=poll_interval,
@@ -92,3 +105,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
     await hass.config_entries.async_reload(entry.entry_id)
+

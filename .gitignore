@@ -28,6 +28,7 @@ captures/
 apk/
 *.log
 *.txt
+!requirements*.txt
 *.cer
 *.crt
 *.pem

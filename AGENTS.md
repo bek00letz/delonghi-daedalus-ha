@@ -54,3 +54,4 @@ This is not about superficial aesthetics (it is not just "white backgrounds" or 
 ## 5. Artifacts, Code & Output Standards
 - **Artifacts**: Clean, scannable, well-typeset Markdown with elegant tables, clear visual callouts, structured sections, and zero boilerplate filler.
 - **Code & CLI Tools**: Clean terminal formatting, clear progress indicators, graceful failure exits, helpful error messages with actionable remedy hints, and polished CLI help menus.
+

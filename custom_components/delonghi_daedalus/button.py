@@ -83,3 +83,4 @@ class DaedalusBrewButton(CoordinatorEntity[DaedalusCoordinator], ButtonEntity):
     async def async_press(self) -> None:
         """Trigger brewing the assigned recipe."""
         await self.coordinator.async_brew(self._recipe_id)
+

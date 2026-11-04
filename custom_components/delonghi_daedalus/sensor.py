@@ -68,8 +68,27 @@ class DaedalusStatusSensor(DaedalusBaseSensor):
 
     @property
     def native_value(self) -> str:
-        """Return the current operational state."""
-        return self.coordinator.data.operational_state.capitalize()
+        """Return the machine's own status when it has reported one."""
+        state = self.coordinator.data
+        if state.status is not None:
+            return state.status.display_status
+        return state.operational_state.capitalize()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the raw report fields whose meaning isn't confirmed yet."""
+        status = self.coordinator.data.status
+        if status is None:
+            return {}
+        return {
+            "machine_status": status.status,
+            "mode": status.mode,
+            "step": status.step,
+            "function_progress": status.function_progress,
+            "beverage_dispensing": status.beverage_dispensing,
+            "peripherals": status.peripherals,
+            "accessories": status.accessories,
+        }
 
 
 class DaedalusLastBeverageSensor(DaedalusBaseSensor):
@@ -143,3 +162,4 @@ class DaedalusAutoOffSensor(DaedalusBaseSensor):
         if auto_off is not None:
             return AUTO_OFF_LABELS.get(auto_off, f"{auto_off} minutes")
         return None
+

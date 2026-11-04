@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import time
 from typing import Any
 
@@ -24,7 +25,6 @@ class DaedalusAppliance:
     sku: str
     status: str
     local_ip: str | None = None
-    auth_token: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -129,6 +129,74 @@ class MachineSettings:
         )
 
 
+# Status words the machine has been seen to send in StatusService reports,
+# mapped to plain words. Anything else is shown as the machine sends it.
+STATUS_WORDS: dict[str, str] = {
+    "Standby": "Standby",
+    "Idle": "Ready",
+}
+STATUS_STANDBY = "Standby"
+
+
+@dataclass
+class MachineStatus:
+    """One StatusService report, as the machine sends it over the local connection.
+
+    Seen on an ECAM 470.85: {"Message": "StatusService", "Response": "<JSON text>"}
+    where the JSON holds Status, CurrMode, alarms, peripherals and accessories.
+    """
+
+    status: str
+    mode: int | None = None
+    function_progress: int | None = None
+    beverage_dispensing: int | None = None
+    step: str | None = None
+    beverage_error: bool = False
+    alarms: dict[str, bool] = field(default_factory=dict)
+    peripherals: dict[str, bool] = field(default_factory=dict)
+    accessories: dict[str, bool] = field(default_factory=dict)
+
+    @property
+    def is_on(self) -> bool:
+        """True unless the machine reports standby."""
+        return self.status != STATUS_STANDBY
+
+    @property
+    def display_status(self) -> str:
+        """The status in plain words."""
+        return STATUS_WORDS.get(self.status, self.status)
+
+    @classmethod
+    def from_message(cls, data: dict[str, Any]) -> MachineStatus | None:
+        """Parse a StatusService message. None if it isn't one or can't be read."""
+        if data.get("Message") != "StatusService":
+            return None
+        body = data.get("Response")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except ValueError:
+                return None
+        if not isinstance(body, dict) or not isinstance(body.get("Status"), str):
+            return None
+
+        def flags(key: str) -> dict[str, bool]:
+            value = body.get(key)
+            return {k: bool(v) for k, v in value.items()} if isinstance(value, dict) else {}
+
+        return cls(
+            status=body["Status"],
+            mode=body.get("CurrMode"),
+            function_progress=body.get("CurrFuncProgress"),
+            beverage_dispensing=body.get("BeverageDispensing"),
+            step=body.get("StepDescr"),
+            beverage_error=bool(body.get("ExitBeverageWithError", False)),
+            alarms=flags("alarms"),
+            peripherals=flags("peripherals"),
+            accessories=flags("accessories"),
+        )
+
+
 @dataclass
 class MachineState:
     """Comprehensive snapshot of coffee machine state."""
@@ -139,6 +207,13 @@ class MachineState:
     is_cloud_online: bool = False
     last_drink: BeverageReport | None = None
     settings: MachineSettings = field(default_factory=MachineSettings)
+    status: MachineStatus | None = None
+
+    def update_from_status(self, status: MachineStatus) -> None:
+        """Take power state from the machine's own status report."""
+        self.status = status
+        self.is_on = status.is_on
+        self.operational_state = STATE_READY if status.is_on else STATE_STANDBY
 
     def update_from_ui_response(self, turn_on_off: int) -> None:
         """Update power state from MachineUI / MachineUIResponse."""

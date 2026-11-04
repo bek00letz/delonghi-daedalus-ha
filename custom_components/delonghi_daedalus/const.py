@@ -15,7 +15,6 @@ CONF_PASSWORD: Final = "password"
 CONF_DEVICE_IP: Final = "device_ip"
 CONF_SERIAL_NUMBER: Final = "serial_number"
 CONF_THING_NAME: Final = "thing_name"
-CONF_AUTH_TOKEN: Final = "auth_token"
 CONF_MODEL: Final = "model"
 CONF_POLL_INTERVAL: Final = "poll_interval"
 

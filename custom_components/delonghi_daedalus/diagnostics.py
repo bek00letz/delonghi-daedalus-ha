@@ -1,9 +1,8 @@
 """Diagnostics support for the De'Longhi Daedalus integration.
 
-Provides a HA-native "Download diagnostics" payload that triages auth /
-LAN-connectivity bugs without asking users to scrape logs by hand. All
-fields that could leak the user's account or session material are
-redacted via `homeassistant.components.diagnostics.async_redact_data`.
+Provides a Home Assistant native diagnostics dump to triage authentication and
+local LAN connectivity issues while strictly protecting user privacy. All
+sensitive fields are redacted via `homeassistant.components.diagnostics.async_redact_data`.
 """
 
 from __future__ import annotations
@@ -16,50 +15,52 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 
-# Anything in this set is replaced with "**REDACTED**" in the payload.
-# Conservative on purpose: even the email is redacted because the support
-# zip can be uploaded to a public issue tracker.
 REDACT_KEYS: set[str] = {
     "email",
     "password",
+    "username",
     "jwt",
     "session_token",
     "session_secret",
     "id_token",
-    "oauth_token",
+    "auth_token",
     "AuthToken",
     "apiKey",
-    "uid",
-    "uidSignature",
-    "signatureTimestamp",
     "serial_number",
     "SerialNo",
+    "thing_name",
+    "device_ip",
     "host",
     "lan_ip",
 }
 
 
-async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
+async def async_get_config_entry_diagnostics(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> dict[str, Any]:
     """Return a redacted diagnostics dump for a Daedalus config entry."""
     coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
 
     coord_state: dict[str, Any] = {}
     if coordinator is not None:
-        last_data = getattr(coordinator, "data", None) or {}
+        state = getattr(coordinator, "data", None)
         coord_state = {
             "last_update_success": bool(getattr(coordinator, "last_update_success", False)),
             "last_exception": str(getattr(coordinator, "last_exception", "") or ""),
             "update_interval_s": getattr(
                 getattr(coordinator, "update_interval", None), "total_seconds", lambda: None
             )(),
-            "data_keys": sorted(last_data.keys()),
-            "lan_connected": bool(last_data.get("connected")),
+            "is_on": getattr(state, "is_on", None),
+            "operational_state": getattr(state, "operational_state", None),
+            "is_local_connected": getattr(state, "is_local_connected", None),
+            "is_cloud_online": getattr(state, "is_cloud_online", None),
+            "has_last_drink": getattr(state, "last_drink", None) is not None,
         }
 
     return {
         "entry": {
             "version": entry.version,
-            "minor_version": entry.minor_version,
+            "minor_version": getattr(entry, "minor_version", 1),
             "data": async_redact_data(dict(entry.data), REDACT_KEYS),
             "options": async_redact_data(dict(entry.options), REDACT_KEYS),
         },
@@ -70,7 +71,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
 async def async_get_device_diagnostics(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    device,  # noqa: ANN001 — DeviceEntry, type avoided to skip import cycle
+    device: Any,
 ) -> dict[str, Any]:
-    """Device-scoped diagnostics — same payload as entry-scoped for now."""
+    """Device-scoped diagnostics."""
     return await async_get_config_entry_diagnostics(hass, entry)

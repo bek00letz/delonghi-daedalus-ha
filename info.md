@@ -1,15 +1,11 @@
-# De'Longhi My Coffee Lounge (Daedalus)
+# De’Longhi Daedalus (My Coffee Lounge)
 
-⚠️ **Pre-alpha** — auth + LAN handshake work, brewing not yet decoded. Use only
-if you can help capture an MITM trace of the official app, otherwise install
-the upstream [`delonghi-ha`](https://github.com/sk7n4k3d/delonghi-ha) for the
-older Coffee Link stack.
+Home Assistant custom integration for De’Longhi smart coffee machines running on the **Daedalus** architecture (such as the **Eletta Ultra ECAM 470.85** and appliances using the *My Coffee Lounge* app).
 
-For the **Eletta Ultra** and other modern machines on the **My Coffee Lounge**
-app (package `com.delonghigroup.daedalus`).
+## Key Capabilities
 
-Setup needs your account email + password, the machine's LAN IP, and the SN
-printed on the unit. Region auto-probes (EU / EU_US / CH).
-
-Source of truth: [`delonghi-ha`](https://github.com/sk7n4k3d/delonghi-ha)
-upstream. This repo is a HACS packaging mirror.
+* **Instant LAN Control** — Low-latency direct WebSocket connection (`/ws/lan2lan`) with local network execution.
+* **Power & Standby Switch** — Wake and standby control.
+* **Live Extraction Telemetry** — Real-time coffee extraction metrics, aroma, volume, and rinse monitoring.
+* **One-Touch Brew Triggers** — Quick brewing buttons for Coffee XL, Espresso, Coffee, Long, Americano, Doppio+, and Hot Water.
+* **Settings & Diagnostics** — Read extraction temperature and auto-off timer settings with native diagnostic dumps.

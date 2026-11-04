@@ -2,51 +2,100 @@
   "config": {
     "step": {
       "user": {
-        "title": "De'Longhi My Coffee Lounge",
-        "description": "Entrez vos identifiants My Coffee Lounge et l'adresse LAN de votre Eletta Ultra (Daedalus).",
+        "title": "Connecter un compte De’Longhi",
+        "description": "Saisissez vos identifiants De’Longhi (My Coffee Lounge) pour découvrir vos appareils connectés.",
         "data": {
-          "email": "Email",
+          "username": "E-mail",
           "password": "Mot de passe",
-          "host": "IP locale de la machine",
-          "serial_number": "Numéro de série",
-          "pool": "Région du compte (pool Gigya) — l'intégration sonde automatiquement toutes les régions, laisser EU sauf si vous savez"
+          "device_ip": "Adresse IP de l’appareil (Optionnel)"
+        },
+        "data_description": {
+          "device_ip": "L’adresse IP locale de votre machine à café pour un contrôle direct sans latence cloud."
         }
       },
-      "reauth_confirm": {
-        "title": "De'Longhi My Coffee Lounge — Réauthentification requise",
-        "description": "La session stockée pour {email} a été rejetée par Gigya. Saisissez à nouveau votre mot de passe pour la renouveler ; le reste de la configuration (IP machine, numéro de série, région) reste tel quel.",
+      "select_device": {
+        "title": "Sélectionner un appareil",
+        "description": "Plusieurs machines à café ont été trouvées associées à votre compte. Choisissez l’appareil à configurer.",
         "data": {
-          "password": "Mot de passe"
+          "serial_number": "Machine à café"
         }
       }
     },
     "error": {
-      "invalid_auth": "Identifiants My Coffee Lounge invalides",
-      "all_pools_unauthorized": "Connexion échouée sur toutes les régions (EU, EU_US, CH). Votre compte a peut-être été créé via la page d'inscription intégrée à l'app (OAuth2/OIDC), qui utilise un chemin d'authentification différent du login direct. Vérifiez votre mot de passe, puis ouvrez une issue sur le dépôt GitHub de l'intégration pour investigation.",
-      "cannot_connect": "Impossible de joindre la machine sur le réseau local",
-      "invalid_host": "IP ou nom d'hôte invalide",
-      "unknown": "Erreur inattendue"
+      "invalid_auth": "E-mail ou mot de passe invalide. Veuillez vérifier vos identifiants et réessayer.",
+      "cannot_connect": "Impossible de se connecter aux services cloud De’Longhi. Veuillez vérifier votre connexion réseau.",
+      "no_devices": "Aucune machine à café connectée trouvée sur ce compte De’Longhi.",
+      "unknown": "Une erreur inattendue est survenue lors de la communication avec les services De’Longhi."
     },
     "abort": {
-      "already_configured": "Machine déjà configurée",
-      "reauth_successful": "Réauthentification réussie"
+      "already_configured": "Cette machine à café est déjà configurée dans Home Assistant."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Paramètres de l’appareil",
+        "description": "Ajustez la connectivité réseau local et l’intervalle d’interrogation cloud.",
+        "data": {
+          "device_ip": "Adresse IP de l’appareil",
+          "poll_interval": "Intervalle de synchronisation cloud (secondes)"
+        },
+        "data_description": {
+          "device_ip": "L’adresse IP locale de votre machine à café sur le réseau.",
+          "poll_interval": "Fréquence d’actualisation de l’état de l’appareil depuis les services cloud De’Longhi."
+        }
+      }
     }
   },
   "entity": {
-    "binary_sensor": {
-      "connected": {
-        "name": "Connectée"
+    "switch": {
+      "power": {
+        "name": "Alimentation"
       }
     },
     "sensor": {
-      "connection_id": {
-        "name": "ID de connexion LAN"
+      "status": {
+        "name": "État"
       },
-      "serial_number": {
-        "name": "Numéro de série"
+      "last_beverage": {
+        "name": "Dernière boisson"
       },
-      "lan_ip": {
-        "name": "Adresse IP locale"
+      "coffee_temperature": {
+        "name": "Température du café"
+      },
+      "auto_off_timer": {
+        "name": "Arrêt automatique"
+      }
+    },
+    "binary_sensor": {
+      "local_network": {
+        "name": "Réseau local"
+      },
+      "cloud_status": {
+        "name": "Connexion cloud"
+      }
+    },
+    "button": {
+      "brew_coffee_xl": {
+        "name": "Préparer un café XL"
+      },
+      "brew_espresso": {
+        "name": "Préparer un espresso"
+      },
+      "brew_coffee": {
+        "name": "Préparer un café"
+      },
+      "brew_long": {
+        "name": "Préparer un café long"
+      },
+      "brew_doppio_plus": {
+        "name": "Préparer un doppio+"
+      },
+      "brew_americano": {
+        "name": "Préparer un americano"
+      },
+      "brew_hot_water": {
+        "name": "Distribuer de l’eau chaude"
       }
     }
   }

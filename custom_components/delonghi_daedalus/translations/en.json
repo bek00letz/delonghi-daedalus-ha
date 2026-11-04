@@ -2,51 +2,100 @@
   "config": {
     "step": {
       "user": {
-        "title": "De'Longhi My Coffee Lounge",
-        "description": "Enter your My Coffee Lounge credentials and the LAN address of your Eletta Ultra (Daedalus).",
+        "title": "Connect De’Longhi Account",
+        "description": "Enter your De’Longhi (My Coffee Lounge) credentials to discover your smart appliances.",
         "data": {
-          "email": "Email",
+          "username": "Email",
           "password": "Password",
-          "host": "Machine IP on LAN",
-          "serial_number": "Machine serial number",
-          "pool": "Account region (Gigya pool) — the integration auto-probes all regions, leave on EU unless you know otherwise"
+          "device_ip": "Appliance IP Address (Optional)"
+        },
+        "data_description": {
+          "device_ip": "The local network IP address of your coffee machine for instantaneous, zero-cloud latency control."
         }
       },
-      "reauth_confirm": {
-        "title": "De'Longhi My Coffee Lounge — Reauthentication required",
-        "description": "The stored session for {email} was rejected by Gigya. Enter your password again to renew it; the rest of the configuration (machine IP, serial number, region) stays as-is.",
+      "select_device": {
+        "title": "Select Appliance",
+        "description": "Multiple coffee machines were found linked to your account. Choose the appliance you wish to configure.",
         "data": {
-          "password": "Password"
+          "serial_number": "Coffee Machine"
         }
       }
     },
     "error": {
-      "invalid_auth": "Invalid My Coffee Lounge credentials",
-      "all_pools_unauthorized": "Login failed on all account regions (EU, EU_US, CH). Your account may have been created via the in-app registration page (OAuth2/OIDC), which uses a different authentication path than direct login. Check that your password is correct, then open an issue on the integration's GitHub repository for further investigation.",
-      "cannot_connect": "Cannot reach the machine on the LAN",
-      "invalid_host": "Invalid IP / hostname",
-      "unknown": "Unexpected error"
+      "invalid_auth": "Invalid email or password. Please verify your credentials and try again.",
+      "cannot_connect": "Unable to connect to De’Longhi cloud services. Please check your network connection.",
+      "no_devices": "No smart coffee machines found linked to this De’Longhi account.",
+      "unknown": "An unexpected error occurred while communicating with De’Longhi services."
     },
     "abort": {
-      "already_configured": "This machine is already configured",
-      "reauth_successful": "Reauthentication successful"
+      "already_configured": "This coffee machine is already configured in Home Assistant."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Appliance Settings",
+        "description": "Adjust local network connectivity and cloud update polling interval.",
+        "data": {
+          "device_ip": "Appliance IP Address",
+          "poll_interval": "Cloud Polling Interval (seconds)"
+        },
+        "data_description": {
+          "device_ip": "The local network IP address of your coffee machine.",
+          "poll_interval": "How frequently to refresh appliance status from De’Longhi cloud services."
+        }
+      }
     }
   },
   "entity": {
-    "binary_sensor": {
-      "connected": {
-        "name": "Connected"
+    "switch": {
+      "power": {
+        "name": "Power"
       }
     },
     "sensor": {
-      "connection_id": {
-        "name": "LAN connection ID"
+      "status": {
+        "name": "Status"
       },
-      "serial_number": {
-        "name": "Serial number"
+      "last_beverage": {
+        "name": "Last Beverage"
       },
-      "lan_ip": {
-        "name": "LAN IP address"
+      "coffee_temperature": {
+        "name": "Coffee Temperature"
+      },
+      "auto_off_timer": {
+        "name": "Auto-Off Timer"
+      }
+    },
+    "binary_sensor": {
+      "local_network": {
+        "name": "Local Network"
+      },
+      "cloud_status": {
+        "name": "Cloud Connection"
+      }
+    },
+    "button": {
+      "brew_coffee_xl": {
+        "name": "Brew Coffee XL"
+      },
+      "brew_espresso": {
+        "name": "Brew Espresso"
+      },
+      "brew_coffee": {
+        "name": "Brew Coffee"
+      },
+      "brew_long": {
+        "name": "Brew Long"
+      },
+      "brew_doppio_plus": {
+        "name": "Brew Doppio+"
+      },
+      "brew_americano": {
+        "name": "Brew Americano"
+      },
+      "brew_hot_water": {
+        "name": "Dispense Hot Water"
       }
     }
   }

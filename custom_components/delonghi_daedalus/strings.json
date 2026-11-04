@@ -1,0 +1,102 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect De’Longhi Account",
+        "description": "Enter your De’Longhi (My Coffee Lounge) credentials to discover your smart appliances.",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "device_ip": "Appliance IP Address (Optional)"
+        },
+        "data_description": {
+          "device_ip": "The local network IP address of your coffee machine for instantaneous, zero-cloud latency control."
+        }
+      },
+      "select_device": {
+        "title": "Select Appliance",
+        "description": "Multiple coffee machines were found linked to your account. Choose the appliance you wish to configure.",
+        "data": {
+          "serial_number": "Coffee Machine"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password. Please verify your credentials and try again.",
+      "cannot_connect": "Unable to connect to De’Longhi cloud services. Please check your network connection.",
+      "no_devices": "No smart coffee machines found linked to this De’Longhi account.",
+      "unknown": "An unexpected error occurred while communicating with De’Longhi services."
+    },
+    "abort": {
+      "already_configured": "This coffee machine is already configured in Home Assistant."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Appliance Settings",
+        "description": "Adjust local network connectivity and cloud update polling interval.",
+        "data": {
+          "device_ip": "Appliance IP Address",
+          "poll_interval": "Cloud Polling Interval (seconds)"
+        },
+        "data_description": {
+          "device_ip": "The local network IP address of your coffee machine.",
+          "poll_interval": "How frequently to refresh appliance status from De’Longhi cloud services."
+        }
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "power": {
+        "name": "Power"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status"
+      },
+      "last_beverage": {
+        "name": "Last Beverage"
+      },
+      "coffee_temperature": {
+        "name": "Coffee Temperature"
+      },
+      "auto_off_timer": {
+        "name": "Auto-Off Timer"
+      }
+    },
+    "binary_sensor": {
+      "local_network": {
+        "name": "Local Network"
+      },
+      "cloud_status": {
+        "name": "Cloud Connection"
+      }
+    },
+    "button": {
+      "brew_coffee_xl": {
+        "name": "Brew Coffee XL"
+      },
+      "brew_espresso": {
+        "name": "Brew Espresso"
+      },
+      "brew_coffee": {
+        "name": "Brew Coffee"
+      },
+      "brew_long": {
+        "name": "Brew Long"
+      },
+      "brew_doppio_plus": {
+        "name": "Brew Doppio+"
+      },
+      "brew_americano": {
+        "name": "Brew Americano"
+      },
+      "brew_hot_water": {
+        "name": "Dispense Hot Water"
+      }
+    }
+  }
+}

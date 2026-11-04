@@ -1,29 +1,94 @@
-"""De'Longhi Daedalus — My Coffee Lounge cloud/LAN integration.
-
-Separate from `delonghi_coffee` (Coffee Link / Ayla) because the Daedalus
-stack (Gigya + AWS IoT Core + ESP-IDF BLE) shares nothing with Coffee Link
-at the wire protocol level. See delonghi-ha issue #18 for context.
-
-Setup entry points are lazy-imported so that pure-helper modules
-(`gigya_auth`, `lan_protocol`) remain importable without pulling the full
-Home Assistant runtime — useful for offline unit tests and for HACS install
-paths where the HA core is present but not initialised.
-"""
+"""The De'Longhi Daedalus Home Assistant integration."""
 
 from __future__ import annotations
 
-from .const import DOMAIN
+import logging
 
-__all__ = ["DOMAIN", "async_setup_entry", "async_unload_entry"]
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import aiohttp_client
+
+from .api.client import DaedalusCloudClient
+from .api.models import DaedalusAppliance
+from .const import (
+    CONF_AUTH_TOKEN,
+    CONF_DEVICE_IP,
+    CONF_MODEL,
+    CONF_PASSWORD,
+    CONF_POLL_INTERVAL,
+    CONF_SERIAL_NUMBER,
+    CONF_THING_NAME,
+    CONF_USERNAME,
+    DEFAULT_POLL_INTERVAL,
+    DOMAIN,
+)
+from .coordinator import DaedalusCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+PLATFORMS: list[Platform] = [
+    Platform.SWITCH,
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+]
 
 
-async def async_setup_entry(hass, entry):  # pragma: no cover - thin wrapper
-    from .entry import async_setup_entry as _impl
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up De'Longhi Daedalus from a config entry."""
+    session = aiohttp_client.async_get_clientsession(hass)
+    cloud_client = DaedalusCloudClient(session=session)
 
-    return await _impl(hass, entry)
+    username = entry.data[CONF_USERNAME]
+    password = entry.data[CONF_PASSWORD]
+
+    # Authenticate with cloud
+    await cloud_client.async_login(username, password)
+    await cloud_client.async_get_jwt()
+
+    # Determine active IP (options take precedence over data)
+    device_ip = entry.options.get(CONF_DEVICE_IP, entry.data.get(CONF_DEVICE_IP)) or None
+    poll_interval = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+
+    appliance = DaedalusAppliance(
+        machine_name=entry.data[CONF_THING_NAME],
+        serial_number=entry.data[CONF_SERIAL_NUMBER],
+        model=entry.data.get(CONF_MODEL, "ECAM"),
+        sku="",
+        status="ONLINE",
+        local_ip=device_ip,
+        auth_token=entry.data.get(CONF_AUTH_TOKEN),
+    )
+
+    coordinator = DaedalusCoordinator(
+        hass=hass,
+        cloud_client=cloud_client,
+        appliance=appliance,
+        poll_interval=poll_interval,
+    )
+
+    await coordinator.async_start()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
+
+    return True
 
 
-async def async_unload_entry(hass, entry):  # pragma: no cover - thin wrapper
-    from .entry import async_unload_entry as _impl
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        coordinator: DaedalusCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        await coordinator.async_stop()
 
-    return await _impl(hass, entry)
+    return unload_ok
+
+
+async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update."""
+    await hass.config_entries.async_reload(entry.entry_id)

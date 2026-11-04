@@ -1,15 +1,22 @@
-"""Diagnostic sensors for the Daedalus integration."""
+"""Sensor platform for De'Longhi Daedalus coffee machines."""
 
 from __future__ import annotations
+
+from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import (
+    AUTO_OFF_LABELS,
+    DOMAIN,
+    MANUFACTURER,
+    WATER_TEMP_LABELS,
+)
 from .coordinator import DaedalusCoordinator
 
 
@@ -18,52 +25,121 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Set up De'Longhi Daedalus sensors from config entry."""
     coordinator: DaedalusCoordinator = hass.data[DOMAIN][entry.entry_id]
+
     async_add_entities(
         [
-            DaedalusConnectionIdSensor(coordinator),
-            DaedalusSerialNumberSensor(coordinator),
-            DaedalusLanIpSensor(coordinator),
+            DaedalusStatusSensor(coordinator),
+            DaedalusLastBeverageSensor(coordinator),
+            DaedalusTemperatureSensor(coordinator),
+            DaedalusAutoOffSensor(coordinator),
         ]
     )
 
 
-class _DaedalusSensorBase(CoordinatorEntity[DaedalusCoordinator], SensorEntity):
+class DaedalusBaseSensor(CoordinatorEntity[DaedalusCoordinator], SensorEntity):
+    """Base class for Daedalus sensors."""
+
     _attr_has_entity_name = True
-    # These are wiring-state sensors (LAN ID / SN / LAN IP), not user-facing
-    # measurements — keep them out of the main dashboard.
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: DaedalusCoordinator, *, key: str) -> None:
+    def __init__(self, coordinator: DaedalusCoordinator, key: str) -> None:
+        """Initialize the sensor."""
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.serial_number}_{key}"
         self._attr_translation_key = key
+        self._attr_unique_id = f"{coordinator.appliance.serial_number}_{key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, coordinator.appliance.serial_number)},
+            name=coordinator.appliance.display_name,
+            manufacturer=MANUFACTURER,
+            model=coordinator.appliance.model,
+            serial_number=coordinator.appliance.serial_number,
+        )
 
 
-class DaedalusConnectionIdSensor(_DaedalusSensorBase):
+class DaedalusStatusSensor(DaedalusBaseSensor):
+    """Sensor reporting active operational state of coffee machine."""
+
+    _attr_icon = "mdi:coffee-maker-check"
+
     def __init__(self, coordinator: DaedalusCoordinator) -> None:
-        super().__init__(coordinator, key="connection_id")
-
-    @property
-    def native_value(self) -> int | None:
-        data = self.coordinator.data or {}
-        return data.get("connection_id")
-
-
-class DaedalusSerialNumberSensor(_DaedalusSensorBase):
-    def __init__(self, coordinator: DaedalusCoordinator) -> None:
-        super().__init__(coordinator, key="serial_number")
+        """Initialize status sensor."""
+        super().__init__(coordinator, "status")
 
     @property
     def native_value(self) -> str:
-        return self.coordinator.serial_number
+        """Return the current operational state."""
+        return self.coordinator.data.operational_state.capitalize()
 
 
-class DaedalusLanIpSensor(_DaedalusSensorBase):
+class DaedalusLastBeverageSensor(DaedalusBaseSensor):
+    """Sensor tracking the last brewed beverage with full telemetry."""
+
+    _attr_icon = "mdi:coffee"
+
     def __init__(self, coordinator: DaedalusCoordinator) -> None:
-        super().__init__(coordinator, key="lan_ip")
+        """Initialize last beverage sensor."""
+        super().__init__(coordinator, "last_beverage")
 
     @property
     def native_value(self) -> str | None:
-        data = self.coordinator.data or {}
-        return data.get("host")
+        """Return the friendly name of the last dispensed beverage."""
+        if self.coordinator.data.last_drink:
+            return self.coordinator.data.last_drink.recipe_name
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extended beverage extraction attributes."""
+        drink = self.coordinator.data.last_drink
+        if not drink:
+            return {}
+
+        return {
+            "recipe_id": drink.recipe_id,
+            "profile_id": drink.profile_id,
+            "water_ml": drink.water,
+            "aroma_level": drink.aroma,
+            "powder_quantity": drink.powder_qty,
+            "mug_index": drink.mug_index,
+            "pre_infusion_stage": drink.pre_infusion_index,
+            "infusion_stage": drink.infusion_index,
+            "rinse": bool(drink.rinse),
+            "timestamp": drink.timestamp,
+        }
+
+
+class DaedalusTemperatureSensor(DaedalusBaseSensor):
+    """Sensor displaying configured coffee extraction temperature."""
+
+    _attr_icon = "mdi:thermometer"
+
+    def __init__(self, coordinator: DaedalusCoordinator) -> None:
+        """Initialize temperature sensor."""
+        super().__init__(coordinator, "coffee_temperature")
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the temperature label."""
+        temp = self.coordinator.data.settings.water_temperature
+        if temp is not None:
+            return WATER_TEMP_LABELS.get(temp, str(temp))
+        return None
+
+
+class DaedalusAutoOffSensor(DaedalusBaseSensor):
+    """Sensor displaying configured auto-off standby timeout."""
+
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(self, coordinator: DaedalusCoordinator) -> None:
+        """Initialize auto-off sensor."""
+        super().__init__(coordinator, "auto_off_timer")
+
+    @property
+    def native_value(self) -> str | None:
+        """Return auto-off duration label."""
+        auto_off = self.coordinator.data.settings.auto_off
+        if auto_off is not None:
+            return AUTO_OFF_LABELS.get(auto_off, f"{auto_off} minutes")
+        return None

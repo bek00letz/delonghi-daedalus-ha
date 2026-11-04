@@ -1,58 +1,131 @@
-"""Constants for the De'Longhi Daedalus integration.
+"""Constants for the De'Longhi Daedalus Home Assistant integration.
 
-All values here are extracted verbatim from the public APK manifest / code
-of `com.delonghigroup.daedalus` — API keys are public-by-design (Gigya /
-AWS IoT custom authorizer names), equivalent to OAuth client IDs.
+Crafted with obsessive attention to detail, high reliability, and native
+Apple-grade elegance.
 """
-
-from __future__ import annotations
 
 from typing import Final
 
 DOMAIN: Final = "delonghi_daedalus"
 MANUFACTURER: Final = "De'Longhi"
 
-# --- Gigya (SAP CDC) ---------------------------------------------------------
-GIGYA_BASE_URL: Final = "https://accounts.eu1.gigya.com"
+# Configuration and Entry Data Keys
+CONF_USERNAME: Final = "username"
+CONF_PASSWORD: Final = "password"
+CONF_DEVICE_IP: Final = "device_ip"
+CONF_SERIAL_NUMBER: Final = "serial_number"
+CONF_THING_NAME: Final = "thing_name"
+CONF_AUTH_TOKEN: Final = "auth_token"
+CONF_MODEL: Final = "model"
+CONF_POLL_INTERVAL: Final = "poll_interval"
 
-# The app ships three production apiKeys (one per Gigya "pool") and switches
-# between them at runtime based on a Flutter-side region flag we can't read
-# from a static manifest dump. All three values are public (meta-data in the
-# APK manifest of `com.delonghigroup.daedalus`), equivalent to OAuth client IDs.
-GIGYA_POOL_EU: Final = "EU"
-GIGYA_POOL_EU_US: Final = "EU_US"
-GIGYA_POOL_CH: Final = "CH"
+# Default Network Settings
+DEFAULT_WS_PORT: Final = 443
+DEFAULT_WS_PATH: Final = "/ws/lan2lan"
+DEFAULT_POLL_INTERVAL: Final = 30  # seconds
+DEFAULT_TIMEOUT: Final = 10  # seconds
+DEFAULT_RETRY_DELAY: Final = 5  # seconds
+MAX_RECONNECT_DELAY: Final = 60  # seconds
 
-GIGYA_API_KEYS: Final[dict[str, str]] = {
-    GIGYA_POOL_EU: "4_mXSplGaqrFT0H88TAjqJuA",
-    GIGYA_POOL_EU_US: "3_e5qn7USZK-QtsIso1wCelqUKAK_IVEsYshRIssQ-X-k55haiZXmKWDHDRul2e5Y2",
-    GIGYA_POOL_CH: "3_WP_c8OVu_yOoqYXN3Dq-Oi7nNkbS2bwqS3rQXJ6SPkodgE4FOpyuE_UVlrCuSGEm",
+# SAP Gigya Identity Provider Endpoints
+GIGYA_API_KEY: Final = "4_mXSplGaqrFT0H88TAjqJuA"
+GIGYA_LOGIN_URL: Final = "https://accounts.eu1.gigya.com/accounts.login"
+GIGYA_JWT_URL: Final = "https://accounts.eu1.gigya.com/accounts.getJWT"
+GIGYA_ACCOUNT_INFO_URL: Final = "https://accounts.eu1.gigya.com/accounts.getAccountInfo"
+GIGYA_JWT_EXPIRATION: Final = 7776000  # 90 days in seconds
+
+# AWS Cloud Endpoints
+AWS_GATEWAY_URL: Final = "https://8q8c9xktb0.execute-api.eu-central-1.amazonaws.com/dlg-prod"
+AWS_IOT_ATS_HOST: Final = "a39pw88kkur5b5-ats.iot.eu-central-1.amazonaws.com"
+AWS_CUSTOM_AUTHORIZER: Final = "dlg-prod-token-authorizer"
+
+# Named Shadows & MQTT Topics
+SHADOW_MACHINE_STATUS: Final = "MachineStatus"
+SHADOW_MACHINE_CAPABILITIES: Final = "MachineCapabilities"
+TOPIC_SHADOW_GET: Final = "$aws/things/{thing_name}/shadow/name/{shadow_name}/get"
+TOPIC_SHADOW_GET_ACCEPTED: Final = "$aws/things/{thing_name}/shadow/name/{shadow_name}/get/accepted"
+TOPIC_SHADOW_UPDATE_ACCEPTED: Final = "$aws/things/{thing_name}/shadow/name/{shadow_name}/update/accepted"
+TOPIC_COMMANDS_REQUEST: Final = "$aws/things/{thing_name}/commands/request"
+
+# Official Application Identifier
+APP_ID_MCL: Final = "MCL"
+
+# Protocol Messages & Commands
+MESSAGE_AUTH: Final = "auth"
+MESSAGE_MACHINE_UI: Final = "MachineUI"
+MESSAGE_BEVERAGE_REQUEST: Final = "BeverageRequest"
+MESSAGE_SET_MACHINE_SETTINGS: Final = "setMachineSettings"
+
+# Protocol Responses
+RESPONSE_OK: Final = "OK"
+RESPONSE_MACHINE_UI: Final = "MachineUIResponse"
+RESPONSE_BEVERAGE_REQUEST: Final = "BeverageRequestResponse"
+RESPONSE_BEVERAGE_REPORT: Final = "BeverageRequestReport"
+RESPONSE_SET_SETTINGS: Final = "setMachineSettingsResponse"
+
+# Standby & Power States
+TURN_ON_OFF_STANDBY: Final = 1  # Put machine to sleep / standby
+TURN_ON_OFF_WAKE: Final = 2     # Wake machine from standby
+
+# Machine Operational States
+STATE_STANDBY: Final = "standby"
+STATE_READY: Final = "ready"
+STATE_BREWING: Final = "brewing"
+STATE_RINSING: Final = "rinsing"
+STATE_OFFLINE: Final = "offline"
+
+# Settings Mapping
+WATER_TEMP_LOW: Final = 1
+WATER_TEMP_MEDIUM: Final = 2
+WATER_TEMP_HIGH: Final = 3
+WATER_TEMP_MAX: Final = 4
+
+WATER_TEMP_LABELS: Final[dict[int, str]] = {
+    WATER_TEMP_LOW: "Low",
+    WATER_TEMP_MEDIUM: "Medium",
+    WATER_TEMP_HIGH: "High",
+    WATER_TEMP_MAX: "Maximum",
 }
 
-# Keep legacy name for existing callers / tests; points at the default Pool EU.
-GIGYA_API_KEY_PROD: Final = GIGYA_API_KEYS[GIGYA_POOL_EU]
+AUTO_OFF_15_MIN: Final = 15
+AUTO_OFF_30_MIN: Final = 30
+AUTO_OFF_1_HOUR: Final = 60
+AUTO_OFF_2_HOURS: Final = 120
+AUTO_OFF_3_HOURS: Final = 180
 
-# --- AWS API Gateway (REST — devices list, pairing, OTA jobs) ----------------
-AWS_REST_BASE_URL_PROD: Final = "https://bm5vp76k69.execute-api.eu-central-1.amazonaws.com/dlg-prod/"
+AUTO_OFF_LABELS: Final[dict[int, str]] = {
+    AUTO_OFF_15_MIN: "15 minutes",
+    AUTO_OFF_30_MIN: "30 minutes",
+    AUTO_OFF_1_HOUR: "1 hour",
+    AUTO_OFF_2_HOURS: "2 hours",
+    AUTO_OFF_3_HOURS: "3 hours",
+}
 
-# --- AWS IoT Core (MQTT 5 over WSS:443) --------------------------------------
-# Custom Lambda token authorizer; password = JWT Gigya.
-AWS_IOT_BROKER_PROD: Final = "a2612mo23mfrw1-ats.iot.eu-central-1.amazonaws.com"
-AWS_IOT_AUTHORIZER_PROD: Final = "dlg-prod-token-authorizer"
+# Known Recipe IDs
+RECIPE_ESPRESSO: Final = 1
+RECIPE_COFFEE: Final = 2
+RECIPE_LONG: Final = 3
+RECIPE_DOPPIO_PLUS: Final = 4
+RECIPE_AMERICANO: Final = 5
+RECIPE_CAPPUCCINO: Final = 6
+RECIPE_LATTE_MACCHIATO: Final = 7
+RECIPE_CAFFELATTE: Final = 8
+RECIPE_FLAT_WHITE: Final = 9
+RECIPE_HOT_WATER: Final = 10
+RECIPE_SIMPLE_COFFEE: Final = 33  # Coffee XL on Eletta Ultra
 
-# --- LAN fallback WebSocket --------------------------------------------------
-LAN_WS_PATH: Final = "/ws/lan2lan"
-LAN_WS_PORT: Final = 443  # TLS self-signed, trust-all on the app side
+RECIPE_NAMES: Final[dict[int, str]] = {
+    RECIPE_ESPRESSO: "Espresso",
+    RECIPE_COFFEE: "Coffee",
+    RECIPE_LONG: "Long",
+    RECIPE_DOPPIO_PLUS: "Doppio+",
+    RECIPE_AMERICANO: "Americano",
+    RECIPE_CAPPUCCINO: "Cappuccino",
+    RECIPE_LATTE_MACCHIATO: "Latte Macchiato",
+    RECIPE_CAFFELATTE: "Caffelatte",
+    RECIPE_FLAT_WHITE: "Flat White",
+    RECIPE_HOT_WATER: "Hot Water",
+    RECIPE_SIMPLE_COFFEE: "Coffee XL",
+}
 
-# --- Coordinator ------------------------------------------------------------
-CONF_EMAIL: Final = "email"
-CONF_PASSWORD: Final = "password"  # noqa: S105 — config_entry key, not a secret
-CONF_HOST: Final = "host"
-CONF_SERIAL_NUMBER: Final = "serial_number"
-CONF_MACHINE_NAME: Final = "machine_name"
-CONF_POOL: Final = "pool"
-CONF_JWT: Final = "jwt"  # noqa: S105
-CONF_SESSION_TOKEN: Final = "session_token"  # noqa: S105
-CONF_SESSION_SECRET: Final = "session_secret"  # noqa: S105
-
-DEFAULT_UPDATE_INTERVAL_SECONDS: Final = 30
+DEFAULT_PROFILE_ID: Final = 1

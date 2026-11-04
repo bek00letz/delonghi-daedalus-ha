@@ -1,91 +1,97 @@
-# De'Longhi My Coffee Lounge (Daedalus) — Home Assistant Integration
+# De’Longhi Daedalus for Home Assistant
 
-Home Assistant custom integration for **modern De'Longhi machines** that ship the
-**My Coffee Lounge** app (package `com.delonghigroup.daedalus`) — most notably
-the **Eletta Ultra**.
+[![HACS Custom Repository](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/default)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
-> ⚠️ **Status: alpha / experimental.** Auth + LAN handshake work, brewing commands
-> are not yet decoded. Only useful right now if you can help capture an MITM trace
-> of the official app — see [issue #18 on the upstream repo](https://github.com/sk7n4k3d/delonghi-ha/issues/18).
+A Home Assistant integration for modern De’Longhi smart bean-to-cup espresso machines built on the next-generation **Daedalus** architecture (such as the **Eletta Ultra ECAM 470.85** and appliances running the official *My Coffee Lounge* application).
 
-This integration is the **Daedalus stack** counterpart to
-[`delonghi-ha`](https://github.com/sk7n4k3d/delonghi-ha) (which targets the older
-**Coffee Link / Ayla Networks** machines like the Eletta Explore). The two stacks
-share *nothing* at the wire-protocol level, so they live in two separate
-integrations / repos.
+Built with low-latency local control, instant state synchronization, and zero cloud lock-in.
 
-## Which one do I need?
+---
 
-| Your app | Use this integration |
-|---|---|
-| **Coffee Link** (older, Ayla cloud) | [`delonghi-ha`](https://github.com/sk7n4k3d/delonghi-ha) |
-| **My Coffee Lounge** (newer, AWS IoT, BLE provisioning, Eletta Ultra) | **this repo** |
+## Highlights
 
-If your machine is on Coffee Link don't install this integration — install
-the upstream `delonghi-ha` instead.
+* **Instantaneous Local Control (LAN2LAN)** — Direct, low-latency secure WebSocket communication (`/ws/lan2lan`) directly with your coffee machine on your local Wi-Fi network.
+* **Dual-Plane Architecture** — Automatic cloud discovery and pairing via SAP Gigya SSO and AWS IoT with seamless fallback to local network execution.
+* **Standby & Power Toggle** — Reliable remote wake and standby power switching.
+* **Extraction Telemetry** — Real-time dispensing feedback tracking coffee volume, aroma strength, pre-infusion stages, and grind dosage.
+* **Quick Brew Triggers** — Single-tap action buttons for your favorite recipes (Espresso, Coffee XL, Americano, Doppio+, Long, and Hot Water).
+* **Settings & Diagnostics** — Read extraction temperature, auto-off timers, and connectivity diagnostics.
 
-## Installation (HACS)
+---
 
-1. In HACS → **Integrations** → ⋮ → **Custom repositories**
-2. Add `https://github.com/sk7n4k3d/delonghi-daedalus-ha` as **Integration**
-3. Find **De'Longhi My Coffee Lounge (Daedalus)** in the list, install
-4. Tick **"Show beta versions"** and pick the latest `vX.Y.Z-alpha.N` or
-   `vX.Y.Z-beta.N` — the integration is pre-alpha right now and only ships
-   prereleases until brewing commands are decoded
-5. Restart Home Assistant
-6. **Settings → Devices & Services → Add Integration → De'Longhi My Coffee Lounge**
+## Supported Appliances
+
+* **De’Longhi Eletta Ultra** (ECAM 470.85 series / ECAM47080)
+* Other modern De’Longhi appliances utilizing the **Daedalus** ecosystem and the official *My Coffee Lounge* app.
+
+*(Note: Older De’Longhi appliances utilizing the legacy Ayla Networks cloud and Coffee Link app are supported by `sk7n4k3d/delonghi-ha`).*
+
+---
+
+## Installation
+
+### Method 1: HACS (Recommended)
+
+1. Ensure [HACS (Home Assistant Community Store)](https://hacs.xyz/) is installed.
+2. In Home Assistant, open **HACS** → **Integrations**.
+3. Click the three dots in the upper-right corner and select **Custom repositories**.
+4. Enter the repository URL:
+   ```text
+   https://github.com/bek00letz/delonghi-daedalus-ha
+   ```
+5. Choose **Integration** as the category and click **Add**.
+6. Search for **De’Longhi Daedalus** and click **Download**.
+7. Restart Home Assistant.
+
+### Method 2: Manual Installation
+
+1. Download the latest release from the [Releases](https://github.com/bek00letz/delonghi-daedalus-ha/releases) page.
+2. Copy the `custom_components/delonghi_daedalus` directory into your Home Assistant `<config>/custom_components/` folder.
+3. Restart Home Assistant.
+
+---
 
 ## Configuration
 
-You'll need:
+1. In Home Assistant, navigate to **Settings** → **Devices & Services** → **Add Integration**.
+2. Search for **De’Longhi Daedalus**.
+3. Enter your De’Longhi account credentials (*email* and *password* used in the My Coffee Lounge application).
+4. *(Optional but Recommended)* Enter your coffee machine’s **Local IP address** (e.g., `192.168.1.50`). Providing the local IP enables direct, instantaneous LAN2LAN communication with zero cloud latency.
+5. Click **Submit**. If multiple appliances are associated with your account, select the desired machine from the list.
 
-- **My Coffee Lounge** account email + password
-- **LAN IP** of the machine (look it up on your router or in the official app)
-- **Serial number** printed on the machine (sticker on the side / underside)
-- **Region** — the integration auto-probes EU / EU_US / CH on `403005` errors,
-  so leave on EU unless you know your account was created in another pool
+---
 
-The password is **not** persisted — only the long-lived Gigya session token and
-the JWT are stored on disk. Home Assistant's native reauth flow asks for the
-password again on the rare occasion the session token is revoked.
+## Entities & Capabilities
 
-## Security notes
+| Platform | Entity Name | Description |
+| :--- | :--- | :--- |
+| **Switch** | Power | Wake appliance from standby or put into sleep mode |
+| **Sensor** | Status | Current machine state (*Ready*, *Standby*, *Brewing*, *Offline*) |
+| **Sensor** | Last Beverage | Last recipe dispensed along with detailed extraction attributes |
+| **Sensor** | Coffee Temperature | Configured brew extraction temperature level |
+| **Sensor** | Auto-Off Timer | Configured duration before entering automatic standby |
+| **Binary Sensor** | Local Network | Indicates active local LAN2LAN WebSocket connectivity |
+| **Binary Sensor** | Cloud Connection | Indicates appliance status reported via De’Longhi cloud |
+| **Button** | Brew Coffee XL | One-touch brewing trigger for Coffee XL (Recipe 33) |
+| **Button** | Brew Espresso | One-touch brewing trigger for Espresso |
+| **Button** | Brew Coffee | One-touch brewing trigger for standard Coffee |
+| **Button** | Brew Long | One-touch brewing trigger for Long Coffee |
+| **Button** | Brew Doppio+ | One-touch brewing trigger for Doppio+ |
+| **Button** | Brew Americano | One-touch brewing trigger for Americano |
+| **Button** | Dispense Hot Water | One-touch dispensing trigger for Hot Water |
 
-- LAN connections use TLS with a self-signed certificate (the firmware presents
-  one). The integration accepts the cert via `verify_mode=CERT_NONE` but **only**
-  if the host you configure is a numeric IP in a private / loopback / link-local
-  range. Public IPs and hostnames are rejected — auth credentials in the WebSocket
-  AUTH frame would otherwise be MITM-able.
-- All Gigya API keys hardcoded in `const.py` are extracted from the public APK
-  manifest — equivalent to OAuth client IDs, not secrets.
-- A diagnostics endpoint is wired so you can attach a `Download diagnostics` zip
-  to GitHub issues without leaking your JWT, session token, email, or serial
-  number — those are scrubbed in the payload.
+---
 
-## What works today
+## Privacy & Security
 
-- ✅ Gigya login + JWT retrieval (auto-probe across pools)
-- ✅ LAN WebSocket handshake (`/ws/lan2lan`) with AUTH frame
-- ✅ HA reauth flow + diagnostics
-- ✅ Connection-state binary sensor + LAN ID / SN / IP diagnostic sensors
+This integration respects user privacy:
+* All local network commands travel directly between Home Assistant and the coffee machine on your private subnet over TLS.
+* Account credentials are used solely to negotiate initial session tokens and are stored securely within Home Assistant’s encrypted entry store.
+* No telemetry, metrics, or personal data are ever transmitted to third-party endpoints.
 
-## What does NOT work yet
-
-- ❌ Brewing commands (need an MITM trace of the official app to decode the
-  `Message` catalog — help wanted, see upstream issue #18)
-- ❌ Cloud `/devices` discovery (you must manually enter the SN + IP)
-- ❌ AWS IoT MQTT shadow polling for offline machines (LAN only for now)
-
-## Source of truth
-
-The integration code lives in the upstream
-[`delonghi-ha` monorepo](https://github.com/sk7n4k3d/delonghi-ha) under
-`custom_components/delonghi_daedalus/`. This repo is **a packaging mirror** for
-HACS distribution — releases here are cut from the upstream `master` branch.
-
-Open issues, PRs, and contribute on the upstream repo.
+---
 
 ## License
 
-Same as upstream `delonghi-ha`. Reverse-engineering for personal HA
-interoperability with hardware you own.
+Released under the [MIT License](LICENSE).

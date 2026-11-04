@@ -80,7 +80,7 @@ If your router later gives the machine a new address, Home Assistant finds it ag
 | **Binary sensor** | Home network connection, Cloud connection | Whether Home Assistant is connected to the machine directly and through De’Longhi’s cloud |
 | **Button** | Brew coffee XL, espresso, coffee, long coffee, doppio+, americano; Hot water | One-tap drinks (not yet tested) |
 
-The machine reports its status when something changes, for example when it wakes, warms up or brews. After Home Assistant restarts, status and alarms show *Unknown* until the next report.
+The machine reports its status to Home Assistant directly whenever something changes, for example when it wakes, warms up or brews. Right after Home Assistant starts, before the machine has reported, Home Assistant shows the status the machine last reported to De’Longhi’s cloud.
 
 ---
 
@@ -89,7 +89,7 @@ The machine reports its status when something changes, for example when it wakes
 Control over your home network keeps working when the internet or De’Longhi’s cloud is down:
 
 * **Power, brewing and settings keep working** for as long as the saved sign-in token is valid. Each token lasts 90 days, and Home Assistant renews it on its own whenever the internet is available and fewer than 30 days remain.
-* **The tradeoff is status after a restart.** The machine only reports its status when something changes, so after Home Assistant restarts, status and alarms stay *Unknown* until the machine next reports, for example when you wake it or brew. Reading the last status from De’Longhi’s cloud at startup is planned. That needs the internet, so offline, the *Unknown* gap stays.
+* **The tradeoff is status after a restart.** The machine only reports its status when something changes. With the internet, Home Assistant fills the gap after a restart by reading the status the machine last reported to De’Longhi’s cloud. Without it, status and alarms stay *Unknown* until the machine next reports, for example when you wake it or brew.
 * **Setting up needs the internet once**, to sign in to your De’Longhi account. So does renewing the token: if Home Assistant can’t reach the cloud for the whole 90 days, local control stops until it can.
 
 ---

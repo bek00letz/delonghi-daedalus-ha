@@ -36,7 +36,8 @@ GIGYA_JWT_EXPIRATION: Final = 7776000  # 90 days in seconds
 
 # AWS Cloud Endpoints
 AWS_GATEWAY_URL: Final = "https://8q8c9xktb0.execute-api.eu-central-1.amazonaws.com/dlg-prod"
-AWS_IOT_ATS_HOST: Final = "a39pw88kkur5b5-ats.iot.eu-central-1.amazonaws.com"
+# Production EU endpoint, from the app's MqttConfig (the a39pw88kkur5b5 one is De'Longhi's test server).
+AWS_IOT_ATS_HOST: Final = "a2612mo23mfrw1-ats.iot.eu-central-1.amazonaws.com"
 AWS_CUSTOM_AUTHORIZER: Final = "dlg-prod-token-authorizer"
 
 # Named Shadows & MQTT Topics

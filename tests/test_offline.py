@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
+from custom_components.delonghi_daedalus.api.cloud_status import CloudStatusError
 from custom_components.delonghi_daedalus.api.client import (
     DaedalusCloudClient,
     DaedalusConnectionError,
@@ -98,6 +99,10 @@ async def _setup_offline(hass: HomeAssistant, entry: MockConfigEntry, locals_: l
     with (
         patch(f"{CLOUD}.async_authenticate", authenticate),
         patch(f"{CLOUD}.async_get_devices", side_effect=DaedalusConnectionError("no internet")),
+        patch(
+            "custom_components.delonghi_daedalus.coordinator.async_fetch_status",
+            side_effect=CloudStatusError("no internet"),
+        ),
         patch(
             "custom_components.delonghi_daedalus.coordinator.DaedalusLocalWebSocket",
             side_effect=make_local,

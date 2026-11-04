@@ -10,7 +10,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import aiohttp_client, issue_registry as ir
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -28,6 +28,8 @@ from .api.models import (
     MachineState,
     MachineStatus,
 )
+from .api.cloud_status import CloudStatusError, async_fetch_status
+from .api.discovery import async_find_machine
 from .api.websocket import DaedalusCommandError, DaedalusLocalWebSocket
 from .local_network import async_find_local_machine
 from .storage import DaedalusStore
@@ -35,6 +37,8 @@ from .storage import DaedalusStore
 # Search for the machine after it's been out of reach this long, at most this often.
 SEARCH_AFTER = 5 * 60
 SEARCH_EVERY = 30 * 60
+# While there's no status yet, read the cloud's stored copy at most this often.
+CLOUD_STATUS_EVERY = 5 * 60
 from .const import (
     CONF_DEVICE_IP,
     DEFAULT_POLL_INTERVAL,
@@ -81,6 +85,8 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self.store = store
         self._unreachable_since: float | None = None
         self._last_search = 0.0
+        self._last_cloud_status = -CLOUD_STATUS_EVERY
+        self._ip_hint: str | None = None
 
         self._local_ws: DaedalusLocalWebSocket | None = None
         self._unregister_ws_cb: Any | None = None
@@ -204,9 +210,41 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
 
         if self._local_ws:
             self.state.is_local_connected = self._local_ws.is_connected
+        await self._maybe_fetch_cloud_status()
         self._update_reachability()
         self._maybe_search_for_machine()
         return self.state
+
+    async def _maybe_fetch_cloud_status(self) -> None:
+        """Until the machine reports locally, show the status it last reported to the cloud.
+
+        The machine only reports on changes, so right after a restart this is
+        the only way to know its status. Needs the internet; at most every
+        5 minutes while there's still no status.
+        """
+        now = time.monotonic()
+        if (
+            self.state.status is not None
+            or now - self._last_cloud_status < CLOUD_STATUS_EVERY
+            or not self.cloud_client.token_valid()
+        ):
+            return
+        self._last_cloud_status = now
+        try:
+            reported = await async_fetch_status(
+                aiohttp_client.async_get_clientsession(self.hass),
+                self.appliance.machine_name,
+                await self.cloud_client.async_get_token(),
+            )
+        except (CloudStatusError, DaedalusConnectionError, DaedalusApiError, DaedalusAuthError) as err:
+            _LOGGER.debug("Couldn't read the stored status from the cloud: %s", err)
+            return
+        status = MachineStatus.from_report(reported)
+        if status is None:
+            return
+        self._ip_hint = status.reported_ip
+        if self.state.status is None:  # a local report may have arrived meanwhile
+            self.state.update_from_status(status)
 
     def _maybe_search_for_machine(self) -> None:
         """Look for the machine on the network when it isn't where we expect it.
@@ -234,7 +272,17 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         fingerprint = self.store.machine_fingerprint if self.store else None
         if fingerprint is None and not self.cloud_client.token_valid():
             return  # can't confirm a candidate without a token
-        found = await async_find_local_machine(
+        found = None
+        if self._ip_hint and fingerprint and self._ip_hint != self.appliance.local_ip:
+            # Try the address the machine reported to the cloud first; the
+            # certificate still has to match.
+            found = await async_find_machine(
+                aiohttp_client.async_get_clientsession(self.hass),
+                [self._ip_hint],
+                self.appliance.serial_number,
+                fingerprint=fingerprint,
+            )
+        found = found or await async_find_local_machine(
             self.hass,
             self.appliance.serial_number,
             fingerprint=fingerprint,

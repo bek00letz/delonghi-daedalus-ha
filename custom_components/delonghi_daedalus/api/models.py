@@ -154,6 +154,8 @@ class MachineStatus:
     alarms: dict[str, bool] = field(default_factory=dict)
     peripherals: dict[str, bool] = field(default_factory=dict)
     accessories: dict[str, bool] = field(default_factory=dict)
+    # The machine's own idea of its address; only in the cloud's stored copy.
+    reported_ip: str | None = None
 
     @property
     def is_on(self) -> bool:
@@ -176,6 +178,11 @@ class MachineStatus:
                 body = json.loads(body)
             except ValueError:
                 return None
+        return cls.from_report(body)
+
+    @classmethod
+    def from_report(cls, body: Any) -> MachineStatus | None:
+        """Parse a status report body: a local StatusService or the cloud's stored copy."""
         if not isinstance(body, dict) or not isinstance(body.get("Status"), str):
             return None
 
@@ -193,6 +200,7 @@ class MachineStatus:
             alarms=flags("alarms"),
             peripherals=flags("peripherals"),
             accessories=flags("accessories"),
+            reported_ip=body.get("LanIpAddress") if isinstance(body.get("LanIpAddress"), str) else None,
         )
 
 

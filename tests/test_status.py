@@ -197,3 +197,57 @@ async def test_declined_command_shows_a_clear_error(hass: HomeAssistant, machine
     assert err.value.translation_key == "command_rejected"
     # A declined command doesn't flip the switch.
     assert _state(hass, "switch", "power").state == switch.state
+
+
+async def test_stored_cloud_status_fills_the_gap_after_a_restart(hass: HomeAssistant) -> None:
+    """Right after startup the cloud's stored status shows; a fresh local report then wins."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=SERIAL,
+        data={
+            CONF_USERNAME: "user@example.com",
+            CONF_PASSWORD: "pw",
+            CONF_SERIAL_NUMBER: SERIAL,
+            CONF_THING_NAME: "thing",
+            CONF_DEVICE_IP: "192.0.2.10",
+        },
+    )
+    entry.add_to_hass(hass)
+    stubs: list[StubLocal] = []
+
+    def make_local(**kwargs):
+        stubs.append(StubLocal(**kwargs))
+        return stubs[-1]
+
+    stored = json.loads(_report("Idle", 7, Filter=True)["Response"])
+    appliance = DaedalusAppliance("thing", SERIAL, "ECAM47080", "", "ONLINE")
+    with (
+        patch("custom_components.delonghi_daedalus.DaedalusCloudClient.async_authenticate"),
+        patch("custom_components.delonghi_daedalus.DaedalusCloudClient.token_valid", return_value=True),
+        patch("custom_components.delonghi_daedalus.DaedalusCloudClient.async_get_token", return_value="tok"),
+        patch(
+            "custom_components.delonghi_daedalus.DaedalusCloudClient.async_get_devices",
+            return_value=[appliance],
+        ),
+        patch(
+            "custom_components.delonghi_daedalus.coordinator.async_fetch_status",
+            return_value=stored,
+        ) as fetch,
+        patch(
+            "custom_components.delonghi_daedalus.coordinator.DaedalusLocalWebSocket",
+            side_effect=make_local,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        fetch.assert_awaited_once()
+        assert fetch.call_args.args[1] == "thing"
+        assert _state(hass, "sensor", "status").state == "Ready"
+        assert _state(hass, "switch", "power").state == "on"
+        assert _state(hass, "binary_sensor", "alarm_water_filter").state == "on"
+
+        stubs[0].push(_report("Standby", 0))
+        await hass.async_block_till_done()
+        assert _state(hass, "sensor", "status").state == "Standby"
+        assert await hass.config_entries.async_unload(entry.entry_id)

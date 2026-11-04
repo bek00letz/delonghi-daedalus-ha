@@ -73,6 +73,15 @@
     "switch": {
       "power": {
         "name": "Power"
+      },
+      "sound": {
+        "name": "Sound"
+      },
+      "energy_saving": {
+        "name": "Energy saving"
+      },
+      "cup_warmer": {
+        "name": "Cup warmer"
       }
     },
     "sensor": {
@@ -82,11 +91,26 @@
       "last_beverage": {
         "name": "Last drink"
       },
-      "coffee_temperature": {
-        "name": "Coffee temperature"
+      "active_profile": {
+        "name": "Machine profile"
       },
-      "auto_off_timer": {
-        "name": "Auto-off timer"
+      "descale_progress": {
+        "name": "Descaling progress"
+      },
+      "water_filter_used": {
+        "name": "Water filter used"
+      },
+      "grounds_container": {
+        "name": "Grounds container"
+      },
+      "coffees_brewed": {
+        "name": "Coffees brewed"
+      },
+      "water_used": {
+        "name": "Water used"
+      },
+      "brew_progress": {
+        "name": "Brew progress"
       }
     },
     "binary_sensor": {
@@ -181,6 +205,50 @@
       },
       "brew_hot_water": {
         "name": "Hot water"
+      }
+    },
+    "select": {
+      "coffee_temperature": {
+        "name": "Coffee temperature",
+        "state": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High",
+          "maximum": "Maximum"
+        }
+      },
+      "auto_off_timer": {
+        "name": "Auto-off time",
+        "state": {
+          "15": "15 minutes",
+          "30": "30 minutes",
+          "60": "1 hour",
+          "120": "2 hours",
+          "180": "3 hours",
+          "240": "4 hours"
+        }
+      },
+      "water_hardness": {
+        "name": "Water hardness",
+        "state": {
+          "level_1": "Level 1",
+          "level_2": "Level 2",
+          "level_3": "Level 3",
+          "level_4": "Level 4"
+        }
+      },
+      "brew_profile": {
+        "name": "Brew profile",
+        "state": {
+          "1": "Profile 1",
+          "2": "Profile 2",
+          "3": "Profile 3",
+          "4": "Profile 4",
+          "5": "Profile 5",
+          "6": "Profile 6",
+          "7": "Profile 7",
+          "8": "Profile 8"
+        }
       }
     }
   },

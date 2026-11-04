@@ -3,7 +3,7 @@
 [![HACS Custom Repository](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/default)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
-> **Status: early, in active development.** Sign-in, power control over your home network (including without internet), finding the machine automatically, and machine status and alarms work on an Eletta Ultra (ECAM 470.85). Brewing from Home Assistant is not tested yet. Built on [sk7n4k3d’s original work](#credits).
+> **Status: early, in active development.** On an Eletta Ultra (ECAM 470.85): sign-in, power control over your home network (also without internet), finding the machine automatically, live status and alarms, and settings work. **Brewing from Home Assistant is not tested yet.** EU accounts only for now; [US owners can help](#help-wanted-us-accounts). Built on [sk7n4k3d’s original work](#credits).
 
 A Home Assistant integration for modern De’Longhi smart bean-to-cup espresso machines built on the next-generation **Daedalus** architecture (such as the **Eletta Ultra ECAM 470.85** and appliances running the official *My Coffee Lounge* application).
 
@@ -71,16 +71,20 @@ If your router later gives the machine a new address, Home Assistant finds it ag
 | Platform | Entity | Description |
 | :--- | :--- | :--- |
 | **Switch** | Power | Wakes the machine or puts it into standby. Follows the machine’s own reports. |
-| **Sensor** | Status | The machine’s own status, such as *Ready* or *Standby*. Raw report details are attributes. |
-| **Sensor** | Last drink | Last drink brewed, with extraction details as attributes |
-| **Sensor** | Coffee temperature | Configured brewing temperature |
-| **Sensor** | Auto-off timer | Time before the machine goes into standby on its own |
+| **Switch** | Sound, Energy saving, Cup warmer | The machine’s on/off settings |
+| **Select** | Coffee temperature, Auto-off time, Water hardness | Settings, with the choices your machine reports |
+| **Select** | Brew profile | Which profile Home Assistant’s drinks use. Starts at the machine’s active profile and lists only profiles seen in use, so it never offers one that doesn’t exist. |
+| **Sensor** | Status | The machine’s own status, such as *Ready*, *Busy* or *Standby*. Raw report details are attributes. |
+| **Sensor** | Brew progress | How far the drink being made is, live |
+| **Sensor** | Last drink | The last drink made, also from the app or the machine, with its details as attributes |
+| **Sensor** | Descaling progress, Water filter used, Grounds container | Maintenance levels in percent |
+| **Sensor** | Machine profile, Coffees brewed, Water used | The profile active on the machine, and lifetime counters |
 | **Binary sensor** | Water tank empty, Water tank missing, Grounds container full, Out of coffee beans, Descaling needed, Water filter, Brew unit cleaning, Cleaning needed, General fault | Alarms the machine reports. On means it needs attention. |
 | **Binary sensor** | 12 technical faults (grinder, heater sensor, fan, …) | Created but switched off. Turn them on under the device’s entities if you want them. |
 | **Binary sensor** | Home network connection, Cloud connection | Whether Home Assistant is connected to the machine directly and through De’Longhi’s cloud |
-| **Button** | Brew coffee XL, espresso, coffee, long coffee, doppio+, americano; Hot water | One-tap drinks (not yet tested) |
+| **Button** | Brew coffee XL, espresso, coffee, long coffee, doppio+, americano; Hot water | One-tap drinks. **Not yet tested.** Hot water and Coffee XL use confirmed recipe numbers; the others follow De’Longhi’s standard numbering. |
 
-The machine reports its status to Home Assistant directly whenever something changes, for example when it wakes, warms up or brews. Right after Home Assistant starts, before the machine has reported, Home Assistant shows the status the machine last reported to De’Longhi’s cloud.
+The machine reports its status to Home Assistant directly whenever something changes, and Home Assistant also follows the copy the machine keeps in De’Longhi’s cloud, so status, settings and maintenance levels stay current even when you use the app.
 
 ---
 
@@ -102,6 +106,16 @@ Control over your home network keeps working when the internet or De’Longhi’
 * When searching your network, Home Assistant only offers the token to devices with a coffee-machine certificate, and once your machine is known, it searches by certificate alone without sending the token anywhere.
 * Like every Home Assistant integration, your email, password and token are stored in Home Assistant’s configuration folder, which is not encrypted. Diagnostics downloads leave them out.
 * No analytics or tracking. Nothing is sent anywhere except De’Longhi’s own services and your machine.
+
+---
+
+## Help wanted: US accounts
+
+The integration works with EU De’Longhi accounts. US accounts use different servers. The US addresses for the device list and live machine data are already known (from the app), but the **sign-in key** for US accounts comes from De’Longhi’s remote settings at run time and isn’t in the app itself.
+
+If you have a US account, you can unlock US support with one capture: route your phone through [mitmproxy](https://mitmproxy.org) (a normal Wi-Fi proxy is enough), sign in to the My Coffee Lounge app, and note the `apiKey` value and server name of the `accounts.login` request (a server like `accounts.us1.gigya.com`). The `apiKey` is the app’s public key, not your password. Please **don’t** share your password, tokens or the full capture. Open an issue with just those two values and your machine model.
+
+One catch: the app normally refuses the proxy’s certificate, so this needs a phone or app build that trusts user certificates (on Android, typically a patched app). Its connection to Amazon’s live service refuses the proxy even then, and that’s fine, because only the sign-in request is needed.
 
 ---
 

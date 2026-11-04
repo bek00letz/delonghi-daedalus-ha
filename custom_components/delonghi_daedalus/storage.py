@@ -42,6 +42,29 @@ class DaedalusStore:
         value = self._data.get("machine_cert_sha256")
         return bytes.fromhex(value) if value else None
 
+    @property
+    def capabilities(self) -> dict | None:
+        """The machine's capabilities record, as last read from the cloud."""
+        return self._data.get("capabilities")
+
+    @callback
+    def set_capabilities(self, reported: dict) -> None:
+        """Keep the capabilities so device details survive a restart without internet."""
+        if self._data.get("capabilities") != reported:
+            self._data["capabilities"] = reported
+            self._save()
+
+    @property
+    def profiles(self) -> list[int]:
+        """Profiles this machine has been seen using."""
+        return list(self._data.get("profiles", []))
+
+    @callback
+    def set_profiles(self, profiles: list[int]) -> None:
+        if self._data.get("profiles") != profiles:
+            self._data["profiles"] = profiles
+            self._save()
+
     @callback
     def set_token(self, token: str) -> None:
         """Remember a new account token."""

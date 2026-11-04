@@ -29,7 +29,7 @@ from ..const import (
     TURN_ON_OFF_STANDBY,
     TURN_ON_OFF_WAKE,
 )
-from .models import BeverageParameters, MachineSettings
+from .models import BeverageParameters
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -398,13 +398,17 @@ class DaedalusLocalWebSocket:
 
         return await self.async_send_command(payload)
 
-    async def async_set_settings(self, settings: MachineSettings) -> dict[str, Any]:
-        """Configure machine settings (temperature, auto-off, water hardness)."""
+    async def async_set_settings(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Change settings. ``fields`` mirrors the MachineSettings record's Editable part.
+
+        Confirmed on an ECAM 470.85 (2026-11-04): top-level CoffeeTemp,
+        AutoTurnOffTimeInMin and WaterHardness; switches nested in UserConf.
+        The machine ignores (doesn't answer) fields it doesn't know.
+        """
         payload = {
             "Message": MESSAGE_SET_MACHINE_SETTINGS,
             "AppId": APP_ID_MCL,
             "RequestId": generate_request_id(),
-            "Settings": settings.to_dict(),
+            **fields,
         }
         return await self.async_send_command(payload)
-

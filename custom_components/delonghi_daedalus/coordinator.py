@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import dataclasses
 from datetime import timedelta
 import time
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import aiohttp_client, issue_registry as ir
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import aiohttp_client, device_registry as dr, issue_registry as ir
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -24,11 +26,12 @@ from .api.models import (
     BeverageParameters,
     BeverageReport,
     DaedalusAppliance,
+    MachineCapabilities,
     MachineSettings,
     MachineState,
     MachineStatus,
 )
-from .api.cloud_status import CloudStatusError, async_fetch_status
+from .api.cloud import DaedalusCloudConnection
 from .api.discovery import async_find_machine
 from .api.websocket import DaedalusCommandError, DaedalusLocalWebSocket
 from .local_network import async_find_local_machine
@@ -37,12 +40,19 @@ from .storage import DaedalusStore
 # Search for the machine after it's been out of reach this long, at most this often.
 SEARCH_AFTER = 5 * 60
 SEARCH_EVERY = 30 * 60
-# While there's no status yet, read the cloud's stored copy at most this often.
-CLOUD_STATUS_EVERY = 5 * 60
+
+# Settings the machine accepts at the top level of setMachineSettings, and
+# where each lives in MachineSettings.
+SETTING_FIELDS = {
+    "CoffeeTemp": "coffee_temperature",
+    "AutoTurnOffTimeInMin": "auto_off_minutes",
+    "WaterHardness": "water_hardness",
+}
 from .const import (
     CONF_DEVICE_IP,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    MANUFACTURER,
     RESPONSE_BEVERAGE_REPORT,
     RESPONSE_BEVERAGE_REQUEST,
     RESPONSE_MACHINE_UI,
@@ -85,8 +95,26 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self.store = store
         self._unreachable_since: float | None = None
         self._last_search = 0.0
-        self._last_cloud_status = -CLOUD_STATUS_EVERY
         self._ip_hint: str | None = None
+        # Profile chosen in Home Assistant for its drinks; None = the machine's active one.
+        self.brew_profile: int | None = None
+        # Profiles seen in use (active on the machine, or in a brew report). The
+        # machine supports several, but which exist isn't readable, so only
+        # profiles known to be real are offered.
+        self.known_profiles: set[int] = set(store.profiles) if store else set()
+        if store and (cached := MachineCapabilities.from_report(store.capabilities)):
+            self.state.capabilities = cached
+        # Follows the machine's status, settings and capabilities through the
+        # cloud, live, whenever the internet is available.
+        self._cloud = DaedalusCloudConnection(
+            aiohttp_client.async_get_clientsession(hass),
+            appliance.machine_name,
+            cloud_client.async_get_token,
+            self._handle_shadow,
+            on_connected=self._cloud_connected,
+            # The machine's answers and brew reports, also for drinks made in the app.
+            on_machine_message=self._handle_machine_message,
+        )
 
         self._local_ws: DaedalusLocalWebSocket | None = None
         self._unregister_ws_cb: Any | None = None
@@ -104,7 +132,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             on_fingerprint=self.store.set_machine_fingerprint if self.store else None,
             on_identity_changed=self._identity_changed,
         )
-        self._unregister_ws_cb = self._local_ws.register_callback(self._handle_ws_message)
+        self._unregister_ws_cb = self._local_ws.register_callback(self._handle_machine_message)
 
     def _identity_changed(self, mismatch: bool) -> None:
         """Show (or clear) a repair notice when the machine's certificate changes."""
@@ -129,9 +157,11 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         await self.async_config_entry_first_refresh()
         if self._local_ws:
             await self._local_ws.async_start()
+        await self._cloud.async_start()
 
     async def async_stop(self) -> None:
         """Stop local WebSocket and release network resources."""
+        await self._cloud.async_stop()
         if self._unregister_ws_cb:
             self._unregister_ws_cb()
             self._unregister_ws_cb = None
@@ -150,9 +180,11 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             if self._local_ws:
                 self.hass.async_create_task(self._local_ws.async_start())
 
-    def _handle_ws_message(self, data: dict[str, Any]) -> None:
-        """Handle incoming asynchronous event messages from appliance."""
+    def _handle_machine_message(self, data: dict[str, Any]) -> None:
+        """A message from the machine, over the home network or relayed by the cloud."""
         msg_type = data.get("Message")
+        if isinstance(data.get("ProfileId"), int) and data.get("Response") == RESPONSE_OK:
+            self._saw_profile(data["ProfileId"])
 
         # 0. The machine's own status report: the source of truth when it comes.
         if (status := MachineStatus.from_message(data)) is not None:
@@ -210,41 +242,72 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
 
         if self._local_ws:
             self.state.is_local_connected = self._local_ws.is_connected
-        await self._maybe_fetch_cloud_status()
         self._update_reachability()
         self._maybe_search_for_machine()
         return self.state
 
-    async def _maybe_fetch_cloud_status(self) -> None:
-        """Until the machine reports locally, show the status it last reported to the cloud.
-
-        The machine only reports on changes, so right after a restart this is
-        the only way to know its status. Needs the internet; at most every
-        5 minutes while there's still no status.
-        """
-        now = time.monotonic()
-        if (
-            self.state.status is not None
-            or now - self._last_cloud_status < CLOUD_STATUS_EVERY
-            or not self.cloud_client.token_valid()
-        ):
-            return
-        self._last_cloud_status = now
-        try:
-            reported = await async_fetch_status(
-                aiohttp_client.async_get_clientsession(self.hass),
-                self.appliance.machine_name,
-                await self.cloud_client.async_get_token(),
-            )
-        except (CloudStatusError, DaedalusConnectionError, DaedalusApiError, DaedalusAuthError) as err:
-            _LOGGER.debug("Couldn't read the stored status from the cloud: %s", err)
-            return
-        status = MachineStatus.from_report(reported)
-        if status is None:
-            return
-        self._ip_hint = status.reported_ip
-        if self.state.status is None:  # a local report may have arrived meanwhile
+    @callback
+    def _handle_shadow(self, name: str, reported: dict[str, Any]) -> None:
+        """A cloud record was read or changed."""
+        if name == "MachineStatus" and (status := MachineStatus.from_report(reported)):
+            self._ip_hint = status.reported_ip
             self.state.update_from_status(status)
+        elif name == "MachineSettings":
+            self.state.settings = MachineSettings.from_report(reported)
+            if self.state.settings and self.state.settings.active_profile:
+                self._saw_profile(self.state.settings.active_profile)
+        elif name == "MachineCapabilities" and (caps := MachineCapabilities.from_report(reported)):
+            self.state.capabilities = caps
+            if self.store:
+                self.store.set_capabilities(reported)
+            self._update_device_registry()
+        else:
+            return
+        self.async_set_updated_data(self.state)
+
+    @callback
+    def _cloud_connected(self, connected: bool) -> None:
+        self.state.is_cloud_connected = connected
+        self.async_set_updated_data(self.state)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """The machine as a Home Assistant device: the one place this is defined."""
+        caps = self.state.capabilities
+        info = DeviceInfo(
+            identifiers={(DOMAIN, self.appliance.serial_number)},
+            name=self.appliance.display_name,
+            manufacturer=MANUFACTURER,
+            model=self.appliance.model or None,
+            serial_number=self.appliance.serial_number,
+        )
+        if caps:
+            if caps.sku:
+                info["model_id"] = caps.sku
+            if caps.firmware_ui:
+                info["sw_version"] = caps.firmware_ui
+            if caps.firmware_wifi or caps.firmware_mainboard:
+                info["hw_version"] = ", ".join(
+                    part
+                    for part in (
+                        caps.firmware_mainboard and f"mainboard {caps.firmware_mainboard}",
+                        caps.firmware_wifi and f"Wi-Fi {caps.firmware_wifi}",
+                    )
+                    if part
+                )
+            if caps.mac:
+                info["connections"] = {(dr.CONNECTION_NETWORK_MAC, dr.format_mac(caps.mac))}
+        return info
+
+    @callback
+    def _update_device_registry(self) -> None:
+        """Bring the device page up to date when the capabilities change."""
+        if self.config_entry is None:
+            return
+        info = self.device_info
+        dr.async_get(self.hass).async_get_or_create(
+            config_entry_id=self.config_entry.entry_id, **info
+        )
 
     def _maybe_search_for_machine(self) -> None:
         """Look for the machine on the network when it isn't where we expect it.
@@ -333,24 +396,56 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self.state.update_from_ui_response(TURN_ON_OFF_STANDBY)
         self.async_set_updated_data(self.state)
 
+    def _saw_profile(self, profile: int) -> None:
+        if profile > 0 and profile not in self.known_profiles:
+            self.known_profiles.add(profile)
+            if self.store:
+                self.store.set_profiles(sorted(self.known_profiles))
+
+    @property
+    def machine_profile(self) -> int | None:
+        """The profile active on the machine itself, if known."""
+        settings = self.state.settings
+        return settings.active_profile if settings and settings.active_profile else None
+
+    @property
+    def active_profile(self) -> int:
+        """The profile drinks brew with: chosen in Home Assistant, else the machine's.
+
+        The app works the same way: its profile toggle never talks to the
+        machine; the profile travels with each drink command (seen 2026-11-04).
+        """
+        return self.brew_profile or self.machine_profile or 1
+
     async def async_brew(
         self,
         recipe_id: int,
-        profile_id: int = 1,
+        profile_id: int | None = None,
         parameters: BeverageParameters | None = None,
     ) -> None:
-        """Start brewing a drink."""
-        await self._async_command(lambda ws: ws.async_brew(recipe_id, profile_id, parameters))
+        """Start brewing a drink, with the machine's active profile unless told otherwise."""
+        profile = profile_id or self.active_profile
+        await self._async_command(lambda ws: ws.async_brew(recipe_id, profile, parameters))
         self.state.operational_state = STATE_BREWING
         self.async_set_updated_data(self.state)
 
-    async def async_set_settings(self, settings: MachineSettings) -> None:
-        """Change machine settings."""
-        await self._async_command(lambda ws: ws.async_set_settings(settings))
-        if settings.water_temperature is not None:
-            self.state.settings.water_temperature = settings.water_temperature
-        if settings.auto_off is not None:
-            self.state.settings.auto_off = settings.auto_off
-        if settings.water_hardness is not None:
-            self.state.settings.water_hardness = settings.water_hardness
+    async def async_set_setting(self, field_name: str, value: int) -> None:
+        """Change one top-level setting: CoffeeTemp, AutoTurnOffTimeInMin or WaterHardness."""
+        await self._async_command(lambda ws: ws.async_set_settings({field_name: value}))
+        if self.state.settings is not None:
+            attr = SETTING_FIELDS[field_name]
+            self.state.settings = dataclasses.replace(self.state.settings, **{attr: value})
+        self.async_set_updated_data(self.state)
+
+    async def async_set_switch(self, name: str, on: bool) -> None:
+        """Turn one of the machine's switches (in UserConf, e.g. SoundEnable) on or off.
+
+        Sends the whole UserConf group with only this switch changed, so the
+        other switches are certain to keep their values.
+        """
+        current = dict(self.state.settings.switches) if self.state.settings else {}
+        current[name] = on
+        await self._async_command(lambda ws: ws.async_set_settings({"UserConf": current}))
+        if self.state.settings is not None:
+            self.state.settings = dataclasses.replace(self.state.settings, switches=current)
         self.async_set_updated_data(self.state)

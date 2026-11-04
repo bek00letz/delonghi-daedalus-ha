@@ -1,23 +1,73 @@
-"""Sensor platform for De'Longhi Daedalus coffee machines."""
+"""Sensors for De'Longhi Daedalus coffee machines."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-
-from .const import (
-    AUTO_OFF_LABELS,
-    DOMAIN,
-    MANUFACTURER,
-    WATER_TEMP_LABELS,
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
 )
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfVolume
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .api.models import MachineSettings, MachineState
+from .const import DOMAIN
 from .coordinator import DaedalusCoordinator
+from .entity import DaedalusEntity
+
+@dataclass(frozen=True, kw_only=True)
+class SettingsSensorDescription(SensorEntityDescription):
+    """A sensor fed by the machine's MachineSettings record."""
+
+    value: Callable[[MachineSettings], Any]
+
+
+SETTINGS_SENSORS: tuple[SettingsSensorDescription, ...] = (
+    SettingsSensorDescription(
+        key="active_profile",
+        value=lambda s: s.active_profile,
+    ),
+    SettingsSensorDescription(
+        key="descale_progress",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value=lambda s: s.descale_progress,
+    ),
+    SettingsSensorDescription(
+        key="water_filter_used",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value=lambda s: s.filter_usage,
+    ),
+    SettingsSensorDescription(
+        key="grounds_container",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value=lambda s: s.grounds_container,
+    ),
+    SettingsSensorDescription(
+        key="coffees_brewed",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value=lambda s: s.coffees_brewed,
+    ),
+    SettingsSensorDescription(
+        key="water_used",
+        device_class=SensorDeviceClass.WATER,
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value=lambda s: None if s.water_total_ml is None else s.water_total_ml / 1000,
+    ),
+)
 
 
 async def async_setup_entry(
@@ -25,58 +75,37 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up De'Longhi Daedalus sensors from config entry."""
+    """Set up De'Longhi Daedalus sensors from a config entry."""
     coordinator: DaedalusCoordinator = hass.data[DOMAIN][entry.entry_id]
-
     async_add_entities(
         [
             DaedalusStatusSensor(coordinator),
-            DaedalusLastBeverageSensor(coordinator),
-            DaedalusTemperatureSensor(coordinator),
-            DaedalusAutoOffSensor(coordinator),
+            DaedalusLastDrinkSensor(coordinator),
+            DaedalusBrewProgressSensor(coordinator),
+            *(DaedalusSettingsSensor(coordinator, d) for d in SETTINGS_SENSORS),
         ]
     )
 
 
-class DaedalusBaseSensor(CoordinatorEntity[DaedalusCoordinator], SensorEntity):
-    """Base class for Daedalus sensors."""
-
-    _attr_has_entity_name = True
-
-    def __init__(self, coordinator: DaedalusCoordinator, key: str) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._attr_translation_key = key
-        self._attr_unique_id = f"{coordinator.appliance.serial_number}_{key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.appliance.serial_number)},
-            name=coordinator.appliance.display_name,
-            manufacturer=MANUFACTURER,
-            model=coordinator.appliance.model,
-            serial_number=coordinator.appliance.serial_number,
-        )
-
-
-class DaedalusStatusSensor(DaedalusBaseSensor):
-    """Sensor reporting active operational state of coffee machine."""
+class DaedalusStatusSensor(DaedalusEntity, SensorEntity):
+    """The machine's own status word."""
 
     _attr_icon = "mdi:coffee-maker-check"
 
     def __init__(self, coordinator: DaedalusCoordinator) -> None:
-        """Initialize status sensor."""
         super().__init__(coordinator, "status")
 
     @property
     def native_value(self) -> str | None:
-        """Return the machine's own status; unknown until something has reported it."""
-        state = self.coordinator.data
+        """The machine's own status; unknown until something has reported it."""
+        state: MachineState = self.coordinator.data
         if state.status is not None:
             return state.status.display_status
         return state.operational_state.capitalize() if state.operational_state else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the raw report fields whose meaning isn't confirmed yet."""
+        """The raw report fields whose meaning isn't confirmed yet."""
         status = self.coordinator.data.status
         if status is None:
             return {}
@@ -91,29 +120,40 @@ class DaedalusStatusSensor(DaedalusBaseSensor):
         }
 
 
-class DaedalusLastBeverageSensor(DaedalusBaseSensor):
-    """Sensor tracking the last brewed beverage with full telemetry."""
+class DaedalusBrewProgressSensor(DaedalusEntity, SensorEntity):
+    """How far the drink being made is, from the machine's live reports."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:coffee-to-go"
+
+    def __init__(self, coordinator: DaedalusCoordinator) -> None:
+        super().__init__(coordinator, "brew_progress")
+
+    @property
+    def native_value(self) -> int | None:
+        status = self.coordinator.data.status
+        return None if status is None else status.brew_progress
+
+
+class DaedalusLastDrinkSensor(DaedalusEntity, SensorEntity):
+    """The last drink brewed from Home Assistant, with its extraction details."""
 
     _attr_icon = "mdi:coffee"
 
     def __init__(self, coordinator: DaedalusCoordinator) -> None:
-        """Initialize last beverage sensor."""
+        # Key kept from earlier versions so the entity keeps its ID.
         super().__init__(coordinator, "last_beverage")
 
     @property
     def native_value(self) -> str | None:
-        """Return the friendly name of the last dispensed beverage."""
-        if self.coordinator.data.last_drink:
-            return self.coordinator.data.last_drink.recipe_name
-        return None
+        drink = self.coordinator.data.last_drink
+        return drink.recipe_name if drink else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return extended beverage extraction attributes."""
         drink = self.coordinator.data.last_drink
         if not drink:
             return {}
-
         return {
             "recipe_id": drink.recipe_id,
             "profile_id": drink.profile_id,
@@ -128,38 +168,18 @@ class DaedalusLastBeverageSensor(DaedalusBaseSensor):
         }
 
 
-class DaedalusTemperatureSensor(DaedalusBaseSensor):
-    """Sensor displaying configured coffee extraction temperature."""
+class DaedalusSettingsSensor(DaedalusEntity, SensorEntity):
+    """One value from the machine's settings and counters."""
 
-    _attr_icon = "mdi:thermometer"
+    entity_description: SettingsSensorDescription
 
-    def __init__(self, coordinator: DaedalusCoordinator) -> None:
-        """Initialize temperature sensor."""
-        super().__init__(coordinator, "coffee_temperature")
-
-    @property
-    def native_value(self) -> str | None:
-        """Return the temperature label."""
-        temp = self.coordinator.data.settings.water_temperature
-        if temp is not None:
-            return WATER_TEMP_LABELS.get(temp, str(temp))
-        return None
-
-
-class DaedalusAutoOffSensor(DaedalusBaseSensor):
-    """Sensor displaying configured auto-off standby timeout."""
-
-    _attr_icon = "mdi:timer-outline"
-
-    def __init__(self, coordinator: DaedalusCoordinator) -> None:
-        """Initialize auto-off sensor."""
-        super().__init__(coordinator, "auto_off_timer")
+    def __init__(
+        self, coordinator: DaedalusCoordinator, description: SettingsSensorDescription
+    ) -> None:
+        super().__init__(coordinator, description.key)
+        self.entity_description = description
 
     @property
-    def native_value(self) -> str | None:
-        """Return auto-off duration label."""
-        auto_off = self.coordinator.data.settings.auto_off
-        if auto_off is not None:
-            return AUTO_OFF_LABELS.get(auto_off, f"{auto_off} minutes")
-        return None
-
+    def native_value(self) -> Any:
+        settings = self.coordinator.data.settings
+        return None if settings is None else self.entity_description.value(settings)

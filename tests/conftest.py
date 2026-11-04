@@ -6,6 +6,10 @@ installed from requirements_test.txt.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import patch
+
 import pytest
 
 
@@ -13,3 +17,33 @@ import pytest
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Let Home Assistant load this integration from custom_components/."""
     return
+
+
+class StubCloud:
+    """Stands in for the cloud connection: no network; tests push records in."""
+
+    instances: list[StubCloud] = []
+
+    def __init__(self, session, thing_name: str, token_provider, on_shadow, **kwargs: Any) -> None:
+        self.thing_name = thing_name
+        self.on_shadow: Callable[[str, dict[str, Any]], None] = on_shadow
+        self.on_connected = kwargs.get("on_connected")
+        self.kwargs_on_message = kwargs.get("on_machine_message")
+        self.is_connected = False
+        StubCloud.instances.append(self)
+
+    async def async_start(self) -> None:
+        return None
+
+    async def async_stop(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def stub_cloud():
+    """Every test gets the stub instead of a real AWS connection."""
+    StubCloud.instances = []
+    with patch(
+        "custom_components.delonghi_daedalus.coordinator.DaedalusCloudConnection", StubCloud
+    ):
+        yield StubCloud

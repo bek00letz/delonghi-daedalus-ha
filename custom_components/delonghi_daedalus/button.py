@@ -5,13 +5,10 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
-    MANUFACTURER,
     RECIPE_AMERICANO,
     RECIPE_COFFEE,
     RECIPE_DOPPIO_PLUS,
@@ -21,6 +18,7 @@ from .const import (
     RECIPE_SIMPLE_COFFEE,
 )
 from .coordinator import DaedalusCoordinator
+from .entity import DaedalusEntity
 
 SUPPORTED_BUTTON_RECIPES = [
     (RECIPE_SIMPLE_COFFEE, "brew_coffee_xl", "mdi:coffee"),
@@ -48,10 +46,8 @@ async def async_setup_entry(
     async_add_entities(buttons)
 
 
-class DaedalusBrewButton(CoordinatorEntity[DaedalusCoordinator], ButtonEntity):
+class DaedalusBrewButton(DaedalusEntity, ButtonEntity):
     """Button entity that triggers a specific coffee or hot water recipe."""
-
-    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -61,18 +57,9 @@ class DaedalusBrewButton(CoordinatorEntity[DaedalusCoordinator], ButtonEntity):
         icon: str,
     ) -> None:
         """Initialize brew button."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, key)
         self._recipe_id = recipe_id
-        self._attr_translation_key = key
         self._attr_icon = icon
-        self._attr_unique_id = f"{coordinator.appliance.serial_number}_{key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.appliance.serial_number)},
-            name=coordinator.appliance.display_name,
-            manufacturer=MANUFACTURER,
-            model=coordinator.appliance.model,
-            serial_number=coordinator.appliance.serial_number,
-        )
 
     @property
     def available(self) -> bool:

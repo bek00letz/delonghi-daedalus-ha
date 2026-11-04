@@ -12,7 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from custom_components.delonghi_daedalus.api.models import (
     DaedalusAppliance,
@@ -97,6 +97,8 @@ class StubLocal:
         self.is_connected = True
         self.identity_mismatch = False
         self.async_turn_on = AsyncMock(return_value={"Response": "OK"})
+        self.async_set_settings = AsyncMock(return_value={"Response": "OK"})
+        self.async_brew = AsyncMock(return_value={"Response": "OK"})
 
     def register_callback(self, cb):
         self.callbacks.append(cb)
@@ -199,55 +201,146 @@ async def test_declined_command_shows_a_clear_error(hass: HomeAssistant, machine
     assert _state(hass, "switch", "power").state == switch.state
 
 
-async def test_stored_cloud_status_fills_the_gap_after_a_restart(hass: HomeAssistant) -> None:
-    """Right after startup the cloud's stored status shows; a fresh local report then wins."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=SERIAL,
-        data={
-            CONF_USERNAME: "user@example.com",
-            CONF_PASSWORD: "pw",
-            CONF_SERIAL_NUMBER: SERIAL,
-            CONF_THING_NAME: "thing",
-            CONF_DEVICE_IP: "192.0.2.10",
+async def test_cloud_records_fill_status_settings_and_device(
+    hass: HomeAssistant, machine: StubLocal, stub_cloud
+) -> None:
+    """Records from the cloud fill status, settings and the device page; local reports still win."""
+    cloud = stub_cloud.instances[0]
+    assert cloud.thing_name == "thing"
+
+    cloud.on_shadow("MachineStatus", json.loads(_report("Idle", 7, Filter=True)["Response"]))
+    cloud.on_shadow(
+        "MachineSettings",
+        {
+            "Editable": {"CoffeeTemp": 1, "AutoTurnOffTimeInMin": 180, "WaterHardness": 0,
+                         "SetProfile": 2, "UserConf": {"SoundEnable": False}},
+            "NotEditable": {"DecalPerc": 49, "FilterUsagePerc": 126, "GroundCntPerc": 62,
+                            "CoffeeGroundsCnt": 351, "WaterTotQty": 230863},
         },
     )
-    entry.add_to_hass(hass)
-    stubs: list[StubLocal] = []
+    cloud.on_shadow(
+        "MachineCapabilities",
+        {"SKU": "0132250187", "MAC": "C0:FF:EE:00:00:01", "FWUIVersion": "1.1.15",
+         "FWWiFiVersion": "1.1.25", "FWMainboardVersion": "1.0.0",
+         "CoffeeTemperatures": [0, 1, 2], "AutoTurnOffTimeInMinutes": [15, 30, 60, 180]},
+    )
+    await hass.async_block_till_done()
 
-    def make_local(**kwargs):
-        stubs.append(StubLocal(**kwargs))
-        return stubs[-1]
+    assert _state(hass, "sensor", "status").state == "Ready"
+    assert _state(hass, "switch", "power").state == "on"
+    assert _state(hass, "select", "coffee_temperature").state == "medium"
+    assert _state(hass, "select", "auto_off_timer").state == "180"
+    assert _state(hass, "select", "coffee_temperature").attributes["options"] == ["low", "medium", "high"]
+    assert _state(hass, "switch", "sound").state == "off"
+    assert _state(hass, "sensor", "active_profile").state == "2"
+    assert _state(hass, "sensor", "water_filter_used").state == "126"
+    assert _state(hass, "sensor", "grounds_container").state == "62"
 
-    stored = json.loads(_report("Idle", 7, Filter=True)["Response"])
-    appliance = DaedalusAppliance("thing", SERIAL, "ECAM47080", "", "ONLINE")
-    with (
-        patch("custom_components.delonghi_daedalus.DaedalusCloudClient.async_authenticate"),
-        patch("custom_components.delonghi_daedalus.DaedalusCloudClient.token_valid", return_value=True),
-        patch("custom_components.delonghi_daedalus.DaedalusCloudClient.async_get_token", return_value="tok"),
-        patch(
-            "custom_components.delonghi_daedalus.DaedalusCloudClient.async_get_devices",
-            return_value=[appliance],
-        ),
-        patch(
-            "custom_components.delonghi_daedalus.coordinator.async_fetch_status",
-            return_value=stored,
-        ) as fetch,
-        patch(
-            "custom_components.delonghi_daedalus.coordinator.DaedalusLocalWebSocket",
-            side_effect=make_local,
-        ),
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    (device,) = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+    assert device.sw_version == "1.1.15"
+    assert device.model_id == "0132250187"
+    assert (dr.CONNECTION_NETWORK_MAC, "c0:ff:ee:00:00:01") in device.connections
 
-        fetch.assert_awaited_once()
-        assert fetch.call_args.args[1] == "thing"
-        assert _state(hass, "sensor", "status").state == "Ready"
-        assert _state(hass, "switch", "power").state == "on"
-        assert _state(hass, "binary_sensor", "alarm_water_filter").state == "on"
+    machine.push(_report("Standby", 0))
+    await hass.async_block_till_done()
+    assert _state(hass, "sensor", "status").state == "Standby"
 
-        stubs[0].push(_report("Standby", 0))
-        await hass.async_block_till_done()
-        assert _state(hass, "sensor", "status").state == "Standby"
-        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+SETTINGS_RECORD = {
+    "Editable": {
+        "CoffeeTemp": 1,
+        "AutoTurnOffTimeInMin": 180,
+        "WaterHardness": 0,
+        "SetProfile": 2,
+        "UserConf": {"SoundEnable": False, "CupWarmer": True, "FilterInstall": True},
+    },
+    "NotEditable": {},
+}
+
+
+async def test_settings_commands_use_the_confirmed_format(
+    hass: HomeAssistant, machine: StubLocal, stub_cloud
+) -> None:
+    stub_cloud.instances[0].on_shadow("MachineSettings", SETTINGS_RECORD)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {"entity_id": _state(hass, "select", "coffee_temperature").entity_id, "option": "high"},
+        blocking=True,
+    )
+    machine.async_set_settings.assert_awaited_with({"CoffeeTemp": 2})
+    assert _state(hass, "select", "coffee_temperature").state == "high"
+
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": _state(hass, "switch", "sound").entity_id}, blocking=True
+    )
+    # The whole group goes out, only sound changed, so nothing else can be reset.
+    machine.async_set_settings.assert_awaited_with(
+        {"UserConf": {"SoundEnable": True, "CupWarmer": True, "FilterInstall": True}}
+    )
+    assert _state(hass, "switch", "sound").state == "on"
+
+
+async def test_brewing_uses_the_active_profile(
+    hass: HomeAssistant, machine: StubLocal, stub_cloud
+) -> None:
+    stub_cloud.instances[0].on_shadow("MachineSettings", SETTINGS_RECORD)
+    await hass.async_block_till_done()
+    await hass.services.async_call(
+        "button", "press", {"entity_id": _state(hass, "button", "brew_coffee_xl").entity_id}, blocking=True
+    )
+    machine.async_brew.assert_awaited_once_with(33, 2, None)
+
+
+
+async def test_brew_progress_and_drinks_made_in_the_app(
+    hass: HomeAssistant, machine: StubLocal, stub_cloud
+) -> None:
+    """Live progress while busy; the cloud's brew report fills the last drink."""
+    cloud = stub_cloud.instances[0]
+    busy = json.loads(_report("Busy", 11)["Response"]) | {"BeverageDispensing": 42}
+    cloud.on_shadow("MachineStatus", busy)
+    await hass.async_block_till_done()
+    assert _state(hass, "sensor", "brew_progress").state == "42"
+    assert _state(hass, "sensor", "status").state == "Busy"
+
+    # The report the machine sent for a hot water made in the app (2026-11-04).
+    stub_cloud.instances[0].kwargs_on_message(
+        {"Message": "BeverageRequestReport", "Response": "OK", "AppId": "MCL",
+         "RecipeId": 16, "ProfileId": 2, "WaterQty2": 303, "Rinse": 1}
+    )
+    cloud.on_shadow("MachineStatus", json.loads(_report("Idle", 7)["Response"]))
+    await hass.async_block_till_done()
+    last = _state(hass, "sensor", "last_beverage")
+    assert last.attributes["recipe_id"] == 16
+    assert last.attributes["water_ml"] == 303
+    assert _state(hass, "sensor", "brew_progress").state == "0"
+
+
+
+async def test_brew_profile_choice(hass: HomeAssistant, machine: StubLocal, stub_cloud) -> None:
+    """Starts at the machine's profile; a choice in Home Assistant goes with each drink."""
+    stub_cloud.instances[0].on_shadow("MachineSettings", SETTINGS_RECORD)
+    await hass.async_block_till_done()
+    profile = _state(hass, "select", "brew_profile")
+    assert profile.state == "2"
+    assert profile.attributes["options"] == ["2"]  # only profiles known to exist
+
+    # A drink made in the app with profile 3 shows that profile exists.
+    stub_cloud.instances[0].kwargs_on_message(
+        {"Message": "BeverageRequestReport", "Response": "OK", "RecipeId": 1, "ProfileId": 3}
+    )
+    await hass.async_block_till_done()
+    assert _state(hass, "select", "brew_profile").attributes["options"] == ["2", "3"]
+
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": profile.entity_id, "option": "3"}, blocking=True
+    )
+    await hass.services.async_call(
+        "button", "press", {"entity_id": _state(hass, "button", "brew_espresso").entity_id}, blocking=True
+    )
+    machine.async_brew.assert_awaited_once_with(1, 3, None)

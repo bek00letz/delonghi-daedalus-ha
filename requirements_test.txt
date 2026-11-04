@@ -1,2 +1,3 @@
 # Home Assistant's test harness for custom integrations (pulls in Home Assistant and pytest).
-pytest-homeassistant-custom-component
+# Pinned to the version the tests were last run with; bump deliberately.
+pytest-homeassistant-custom-component==0.13.375

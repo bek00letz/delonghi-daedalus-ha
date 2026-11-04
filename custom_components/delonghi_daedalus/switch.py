@@ -6,13 +6,20 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN
 from .coordinator import DaedalusCoordinator
+from .entity import DaedalusEntity
+
+# Switches in the machine's UserConf settings: (entity key, field name).
+MACHINE_SWITCHES: tuple[tuple[str, str], ...] = (
+    ("sound", "SoundEnable"),
+    ("energy_saving", "EnergySavingMode"),
+    ("cup_warmer", "CupWarmer"),
+)
 
 
 async def async_setup_entry(
@@ -22,27 +29,22 @@ async def async_setup_entry(
 ) -> None:
     """Set up the De'Longhi Daedalus switch platform."""
     coordinator: DaedalusCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([DaedalusPowerSwitch(coordinator)])
+    async_add_entities(
+        [
+            DaedalusPowerSwitch(coordinator),
+            *(DaedalusMachineSwitch(coordinator, key, name) for key, name in MACHINE_SWITCHES),
+        ]
+    )
 
 
-class DaedalusPowerSwitch(CoordinatorEntity[DaedalusCoordinator], SwitchEntity):
+class DaedalusPowerSwitch(DaedalusEntity, SwitchEntity):
     """Controls coffee machine standby / wake state."""
 
-    _attr_has_entity_name = True
-    _attr_translation_key = "power"
     _attr_icon = "mdi:coffee-maker"
 
     def __init__(self, coordinator: DaedalusCoordinator) -> None:
         """Initialize the power switch entity."""
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.appliance.serial_number}_power"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.appliance.serial_number)},
-            name=coordinator.appliance.display_name,
-            manufacturer=MANUFACTURER,
-            model=coordinator.appliance.model,
-            serial_number=coordinator.appliance.serial_number,
-        )
+        super().__init__(coordinator, "power")
 
     @property
     def is_on(self) -> bool | None:
@@ -62,3 +64,23 @@ class DaedalusPowerSwitch(CoordinatorEntity[DaedalusCoordinator], SwitchEntity):
         """Put machine to sleep / standby."""
         await self.coordinator.async_turn_off()
 
+
+class DaedalusMachineSwitch(DaedalusEntity, SwitchEntity):
+    """One of the machine's on/off settings."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: DaedalusCoordinator, key: str, field_name: str) -> None:
+        super().__init__(coordinator, key)
+        self._field_name = field_name
+
+    @property
+    def is_on(self) -> bool | None:
+        settings = self.coordinator.data.settings
+        return None if settings is None else settings.switches.get(self._field_name)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_switch(self._field_name, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_switch(self._field_name, False)

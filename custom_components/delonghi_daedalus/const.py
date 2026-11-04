@@ -75,57 +75,38 @@ STATE_BREWING: Final = "brewing"
 STATE_RINSING: Final = "rinsing"
 STATE_OFFLINE: Final = "offline"
 
-# Settings Mapping
-WATER_TEMP_LOW: Final = 1
-WATER_TEMP_MEDIUM: Final = 2
-WATER_TEMP_HIGH: Final = 3
-WATER_TEMP_MAX: Final = 4
-
-WATER_TEMP_LABELS: Final[dict[int, str]] = {
-    WATER_TEMP_LOW: "Low",
-    WATER_TEMP_MEDIUM: "Medium",
-    WATER_TEMP_HIGH: "High",
-    WATER_TEMP_MAX: "Maximum",
-}
-
-AUTO_OFF_15_MIN: Final = 15
-AUTO_OFF_30_MIN: Final = 30
-AUTO_OFF_1_HOUR: Final = 60
-AUTO_OFF_2_HOURS: Final = 120
-AUTO_OFF_3_HOURS: Final = 180
-
-AUTO_OFF_LABELS: Final[dict[int, str]] = {
-    AUTO_OFF_15_MIN: "15 minutes",
-    AUTO_OFF_30_MIN: "30 minutes",
-    AUTO_OFF_1_HOUR: "1 hour",
-    AUTO_OFF_2_HOURS: "2 hours",
-    AUTO_OFF_3_HOURS: "3 hours",
-}
-
-# Known Recipe IDs
+# Recipe numbers, in De'Longhi's ECAM numbering. Confirmed on an ECAM 470.85
+# (2026-11-04): 16 hot water (brewed from the app), 33 Coffee XL. The rest
+# follow the same standard numbering but are not yet confirmed by a brew.
 RECIPE_ESPRESSO: Final = 1
 RECIPE_COFFEE: Final = 2
 RECIPE_LONG: Final = 3
-RECIPE_DOPPIO_PLUS: Final = 4
-RECIPE_AMERICANO: Final = 5
-RECIPE_CAPPUCCINO: Final = 6
-RECIPE_LATTE_MACCHIATO: Final = 7
-RECIPE_CAFFELATTE: Final = 8
-RECIPE_FLAT_WHITE: Final = 9
-RECIPE_HOT_WATER: Final = 10
-RECIPE_SIMPLE_COFFEE: Final = 33  # Coffee XL on Eletta Ultra
+RECIPE_DOUBLE_ESPRESSO: Final = 4
+RECIPE_DOPPIO_PLUS: Final = 5
+RECIPE_AMERICANO: Final = 6
+RECIPE_CAPPUCCINO: Final = 7
+RECIPE_LATTE_MACCHIATO: Final = 8
+RECIPE_CAFFELATTE: Final = 9
+RECIPE_FLAT_WHITE: Final = 10
+RECIPE_ESPRESSO_MACCHIATO: Final = 11
+RECIPE_HOT_MILK: Final = 12
+RECIPE_HOT_WATER: Final = 16
+RECIPE_SIMPLE_COFFEE: Final = 33  # Coffee XL on the Eletta Ultra
 
 RECIPE_NAMES: Final[dict[int, str]] = {
     RECIPE_ESPRESSO: "Espresso",
     RECIPE_COFFEE: "Coffee",
-    RECIPE_LONG: "Long",
+    RECIPE_LONG: "Long coffee",
+    RECIPE_DOUBLE_ESPRESSO: "Double espresso",
     RECIPE_DOPPIO_PLUS: "Doppio+",
     RECIPE_AMERICANO: "Americano",
     RECIPE_CAPPUCCINO: "Cappuccino",
-    RECIPE_LATTE_MACCHIATO: "Latte Macchiato",
+    RECIPE_LATTE_MACCHIATO: "Latte macchiato",
     RECIPE_CAFFELATTE: "Caffelatte",
-    RECIPE_FLAT_WHITE: "Flat White",
-    RECIPE_HOT_WATER: "Hot Water",
+    RECIPE_FLAT_WHITE: "Flat white",
+    RECIPE_ESPRESSO_MACCHIATO: "Espresso macchiato",
+    RECIPE_HOT_MILK: "Hot milk",
+    RECIPE_HOT_WATER: "Hot water",
     RECIPE_SIMPLE_COFFEE: "Coffee XL",
 }
 

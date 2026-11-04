@@ -84,7 +84,8 @@ class BeverageReport:
         return cls(
             recipe_id=int(data.get("RecipeId", 0)),
             profile_id=int(data.get("ProfileId", 1)),
-            water=data.get("Water"),
+            # Coffee reports "Water"; hot water reports "WaterQty2" (seen 2026-11-04).
+            water=data.get("Water", data.get("WaterQty2")),
             aroma=data.get("Aroma"),
             powder_qty=data.get("IdPowderQty"),
             mug_index=data.get("IdMugIndex"),
@@ -95,36 +96,94 @@ class BeverageReport:
         )
 
 
+def _int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 @dataclass
 class MachineSettings:
-    """Configurable machine settings."""
+    """Settings and counters from the machine's MachineSettings record in the cloud.
 
-    water_temperature: int | None = None
-    auto_off: int | None = None
-    water_hardness: int | None = None
-    energy_saver: bool | None = None
+    Seen on an ECAM 470.85 (2026-11-04): {"Editable": {"CoffeeTemp", "AutoTurnOffTimeInMin",
+    "WaterHardness", "SetProfile", "UserConf": {...switches}}, "NotEditable": {...counters}}.
+    """
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert non-null settings to wire dict format."""
-        payload: dict[str, Any] = {}
-        if self.water_temperature is not None:
-            payload["WaterTemperature"] = self.water_temperature
-        if self.auto_off is not None:
-            payload["AutoOff"] = self.auto_off
-        if self.water_hardness is not None:
-            payload["WaterHardness"] = self.water_hardness
-        if self.energy_saver is not None:
-            payload["EnergySaver"] = 1 if self.energy_saver else 0
-        return payload
+    coffee_temperature: int | None = None  # level index into the machine's CoffeeTemperatures
+    auto_off_minutes: int | None = None
+    water_hardness: int | None = None  # level index into the machine's WaterHardness
+    active_profile: int | None = None
+    switches: dict[str, bool] = field(default_factory=dict)  # UserConf, e.g. SoundEnable
+    descale_progress: int | None = None  # percent of the way to the next descaling
+    filter_usage: int | None = None  # percent of the water filter's life used
+    grounds_container: int | None = None  # percent full
+    coffees_brewed: int | None = None  # coffee grounds count
+    water_total_ml: int | None = None
+    milk_cleanings: int | None = None
+    grind_setting: int | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> MachineSettings:
-        """Parse machine settings payload."""
+    def from_report(cls, body: Any) -> MachineSettings | None:
+        """Parse the record's ``reported`` state; None if it isn't one."""
+        if not isinstance(body, dict):
+            return None
+        edit = body.get("Editable") if isinstance(body.get("Editable"), dict) else {}
+        fixed = body.get("NotEditable") if isinstance(body.get("NotEditable"), dict) else {}
+        if not edit and not fixed:
+            return None
+        conf = edit.get("UserConf") if isinstance(edit.get("UserConf"), dict) else {}
         return cls(
-            water_temperature=data.get("WaterTemperature") or data.get("waterTemperature"),
-            auto_off=data.get("AutoOff") or data.get("autoOff"),
-            water_hardness=data.get("WaterHardness") or data.get("waterHardness"),
-            energy_saver=bool(data.get("EnergySaver") or data.get("energySaver", 0)),
+            coffee_temperature=_int(edit.get("CoffeeTemp")),
+            auto_off_minutes=_int(edit.get("AutoTurnOffTimeInMin")),
+            water_hardness=_int(edit.get("WaterHardness")),
+            active_profile=_int(edit.get("SetProfile")),
+            switches={k: v for k, v in conf.items() if isinstance(v, bool)},
+            descale_progress=_int(fixed.get("DecalPerc")),
+            filter_usage=_int(fixed.get("FilterUsagePerc")),
+            grounds_container=_int(fixed.get("GroundCntPerc")),
+            coffees_brewed=_int(fixed.get("CoffeeGroundsCnt")),
+            water_total_ml=_int(fixed.get("WaterTotQty")),
+            milk_cleanings=_int(fixed.get("MilkCleanCnt")),
+            grind_setting=_int(fixed.get("Granulometry")),
+        )
+
+
+@dataclass
+class MachineCapabilities:
+    """What this machine is and which options it offers (MachineCapabilities record)."""
+
+    sku: str | None = None
+    mac: str | None = None
+    firmware_ui: str | None = None
+    firmware_wifi: str | None = None
+    firmware_mainboard: str | None = None
+    coffee_temperatures: list[int] = field(default_factory=list)
+    auto_off_minutes: list[int] = field(default_factory=list)
+    water_hardness_levels: list[int] = field(default_factory=list)
+    profiles: int | None = None
+
+    @classmethod
+    def from_report(cls, body: Any) -> MachineCapabilities | None:
+        if not isinstance(body, dict) or not body:
+            return None
+
+        def text(key: str) -> str | None:
+            value = body.get(key)
+            return value if isinstance(value, str) and value else None
+
+        def ints(key: str) -> list[int]:
+            value = body.get(key)
+            return [v for v in value if _int(v) is not None] if isinstance(value, list) else []
+
+        return cls(
+            sku=text("SKU"),
+            mac=text("MAC"),
+            firmware_ui=text("FWUIVersion"),
+            firmware_wifi=text("FWWiFiVersion"),
+            firmware_mainboard=text("FWMainboardVersion"),
+            coffee_temperatures=ints("CoffeeTemperatures"),
+            auto_off_minutes=ints("AutoTurnOffTimeInMinutes"),
+            water_hardness_levels=ints("WaterHardness"),
+            profiles=_int(body.get("MachineUserProfiles")),
         )
 
 
@@ -133,7 +192,9 @@ class MachineSettings:
 STATUS_WORDS: dict[str, str] = {
     "Standby": "Standby",
     "Idle": "Ready",
+    "Busy": "Busy",  # brewing (step e.g. "Water Heating Up"); possibly also rinsing
 }
+STATUS_BUSY = "Busy"
 STATUS_STANDBY = "Standby"
 
 
@@ -161,6 +222,13 @@ class MachineStatus:
     def is_on(self) -> bool:
         """True unless the machine reports standby."""
         return self.status != STATUS_STANDBY
+
+    @property
+    def brew_progress(self) -> int:
+        """How far the current drink is, 0-100; 0 when nothing is being made."""
+        if self.status != STATUS_BUSY or not isinstance(self.beverage_dispensing, int):
+            return 0
+        return max(0, min(100, self.beverage_dispensing))
 
     @property
     def display_status(self) -> str:
@@ -214,7 +282,9 @@ class MachineState:
     is_local_connected: bool = False
     is_cloud_online: bool = False
     last_drink: BeverageReport | None = None
-    settings: MachineSettings = field(default_factory=MachineSettings)
+    settings: MachineSettings | None = None
+    capabilities: MachineCapabilities | None = None
+    is_cloud_connected: bool = False
     status: MachineStatus | None = None
 
     def update_from_status(self, status: MachineStatus) -> None:

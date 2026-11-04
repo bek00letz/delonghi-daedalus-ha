@@ -9,12 +9,11 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN
 from .coordinator import DaedalusCoordinator
+from .entity import DaedalusEntity
 
 # Alarm flags from the machine's StatusService report: (flag, translation key, on by default).
 # Everyday ones are on by default; technical faults are created but switched off.
@@ -63,24 +62,10 @@ async def async_setup_entry(
     )
 
 
-class DaedalusBaseBinarySensor(CoordinatorEntity[DaedalusCoordinator], BinarySensorEntity):
+class DaedalusBaseBinarySensor(DaedalusEntity, BinarySensorEntity):
     """Base class for Daedalus binary sensors."""
 
-    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
-
-    def __init__(self, coordinator: DaedalusCoordinator, key: str) -> None:
-        """Initialize the binary sensor."""
-        super().__init__(coordinator)
-        self._attr_translation_key = key
-        self._attr_unique_id = f"{coordinator.appliance.serial_number}_{key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, coordinator.appliance.serial_number)},
-            name=coordinator.appliance.display_name,
-            manufacturer=MANUFACTURER,
-            model=coordinator.appliance.model,
-            serial_number=coordinator.appliance.serial_number,
-        )
 
 
 class DaedalusLocalConnectivityBinarySensor(DaedalusBaseBinarySensor):

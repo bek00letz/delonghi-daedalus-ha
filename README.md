@@ -3,7 +3,7 @@
 [![HACS Custom Repository](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/default)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
->This repo builds on top of the work by `sk7n4k3d` and is currently a work in progress.
+> **Status: early, in active development.** Sign-in, power control over your home network, and machine status and alarms work on an Eletta Ultra (ECAM 470.85). Brewing from Home Assistant is not tested yet. Built on [sk7n4k3d’s original work](#credits).
 
 A Home Assistant integration for modern De’Longhi smart bean-to-cup espresso machines built on the next-generation **Daedalus** architecture (such as the **Eletta Ultra ECAM 470.85** and appliances running the official *My Coffee Lounge* application).
 
@@ -27,7 +27,7 @@ Built with low-latency local control, instant state synchronization, and zero cl
 * **De’Longhi Eletta Ultra** (ECAM 470.85 series / ECAM47080)
 * Other modern De’Longhi appliances utilizing the **Daedalus** ecosystem and the official *My Coffee Lounge* app.
 
-*(Note: Older De’Longhi appliances utilizing the legacy Ayla Networks cloud and Coffee Link app are supported by `sk7n4k3d/delonghi-ha`).*
+*(Older De’Longhi machines that use the Coffee Link app are supported by [sk7n4k3d/delonghi-ha](https://github.com/sk7n4k3d/delonghi-ha).)*
 
 ---
 
@@ -66,31 +66,35 @@ Built with low-latency local control, instant state synchronization, and zero cl
 
 ## Entities & Capabilities
 
-| Platform | Entity Name | Description |
+| Platform | Entity | Description |
 | :--- | :--- | :--- |
-| **Switch** | Power | Wake appliance from standby or put into sleep mode |
-| **Sensor** | Status | Current machine state (*Ready*, *Standby*, *Brewing*, *Offline*) |
-| **Sensor** | Last Beverage | Last recipe dispensed along with detailed extraction attributes |
-| **Sensor** | Coffee Temperature | Configured brew extraction temperature level |
-| **Sensor** | Auto-Off Timer | Configured duration before entering automatic standby |
-| **Binary Sensor** | Local Network | Indicates active local LAN2LAN WebSocket connectivity |
-| **Binary Sensor** | Cloud Connection | Indicates appliance status reported via De’Longhi cloud |
-| **Button** | Brew Coffee XL | One-touch brewing trigger for Coffee XL (Recipe 33) |
-| **Button** | Brew Espresso | One-touch brewing trigger for Espresso |
-| **Button** | Brew Coffee | One-touch brewing trigger for standard Coffee |
-| **Button** | Brew Long | One-touch brewing trigger for Long Coffee |
-| **Button** | Brew Doppio+ | One-touch brewing trigger for Doppio+ |
-| **Button** | Brew Americano | One-touch brewing trigger for Americano |
-| **Button** | Dispense Hot Water | One-touch dispensing trigger for Hot Water |
+| **Switch** | Power | Wakes the machine or puts it into standby. Follows the machine’s own reports. |
+| **Sensor** | Status | The machine’s own status, such as *Ready* or *Standby*. Raw report details are attributes. |
+| **Sensor** | Last drink | Last drink brewed, with extraction details as attributes |
+| **Sensor** | Coffee temperature | Configured brewing temperature |
+| **Sensor** | Auto-off timer | Time before the machine goes into standby on its own |
+| **Binary sensor** | Water tank empty, Water tank missing, Grounds container full, Out of coffee beans, Descaling needed, Water filter, Brew unit cleaning, Cleaning needed, General fault | Alarms the machine reports. On means it needs attention. |
+| **Binary sensor** | 12 technical faults (grinder, heater sensor, fan, …) | Created but switched off. Turn them on under the device’s entities if you want them. |
+| **Binary sensor** | Home network connection, Cloud connection | Whether Home Assistant is connected to the machine directly and through De’Longhi’s cloud |
+| **Button** | Brew coffee XL, espresso, coffee, long coffee, doppio+, americano; Hot water | One-tap drinks (not yet tested) |
+
+The machine reports its status when something changes, for example when it wakes, warms up or brews. After Home Assistant restarts, alarms show *Unknown* until the next report.
 
 ---
 
 ## Privacy & Security
 
-This integration respects user privacy:
-* All local network commands travel directly between Home Assistant and the coffee machine on your private subnet over TLS.
-* Account credentials are used solely to negotiate initial session tokens and are stored securely within Home Assistant’s encrypted entry store.
-* No telemetry, metrics, or personal data are ever transmitted to third-party endpoints.
+* Commands go straight from Home Assistant to the coffee machine over your home network, encrypted with TLS.
+* The machine accepts your De’Longhi account’s sign-in token as its key, so Home Assistant signs in to De’Longhi’s cloud to get one. The token lasts 90 days and is renewed automatically.
+* Like every Home Assistant integration, your email and password are stored in Home Assistant’s configuration folder, which is not encrypted. Diagnostics downloads leave them out.
+* No analytics or tracking. Nothing is sent anywhere except De’Longhi’s own services and your machine.
+* Known gap: the integration does not yet verify the machine’s certificate, so on a compromised home network another device could pose as the machine and receive the token. This is the next thing being fixed.
+
+---
+
+## Credits
+
+This integration started as a fork of [sk7n4k3d/delonghi-daedalus-ha](https://github.com/sk7n4k3d/delonghi-daedalus-ha). [sk7n4k3d](https://github.com/sk7n4k3d)’s original work mapped the Daedalus stack: the De’Longhi sign-in, the local `/ws/lan2lan` handshake that uses the account token, the setup flow and diagnostics, and the HACS packaging and checks this repository still uses. sk7n4k3d also maintains [delonghi-ha](https://github.com/sk7n4k3d/delonghi-ha) for older Coffee Link machines.
 
 ---
 

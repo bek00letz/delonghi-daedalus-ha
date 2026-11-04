@@ -45,8 +45,8 @@ class DaedalusPowerSwitch(CoordinatorEntity[DaedalusCoordinator], SwitchEntity):
         )
 
     @property
-    def is_on(self) -> bool:
-        """Return True if machine is awake / powered on."""
+    def is_on(self) -> bool | None:
+        """Return whether the machine is awake; unknown until it has reported."""
         return self.coordinator.data.is_on
 
     @property

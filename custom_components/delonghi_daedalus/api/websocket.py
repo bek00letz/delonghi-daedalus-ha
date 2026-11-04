@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import hashlib
 import json
 import logging
 import random
@@ -24,15 +25,11 @@ from ..const import (
     MESSAGE_BEVERAGE_REQUEST,
     MESSAGE_MACHINE_UI,
     MESSAGE_SET_MACHINE_SETTINGS,
-    RESPONSE_BEVERAGE_REPORT,
-    RESPONSE_BEVERAGE_REQUEST,
-    RESPONSE_MACHINE_UI,
     RESPONSE_OK,
-    RESPONSE_SET_SETTINGS,
     TURN_ON_OFF_STANDBY,
     TURN_ON_OFF_WAKE,
 )
-from .models import BeverageParameters, BeverageReport, MachineSettings
+from .models import BeverageParameters, MachineSettings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +56,15 @@ class DaedalusCommandError(Exception):
         self.reason = reason
 
 
+def _peer_fingerprint(ws: aiohttp.ClientWebSocketResponse) -> bytes | None:
+    """SHA-256 of the certificate the server presented on this connection."""
+    ssl_object = ws.get_extra_info("ssl_object")
+    if ssl_object is None:
+        return None
+    der = ssl_object.getpeercert(binary_form=True)
+    return hashlib.sha256(der).digest() if der else None
+
+
 def generate_request_id(length: int = 5) -> str:
     """Generate alphanumeric request nonce matching official app."""
     chars = string.ascii_letters + string.digits
@@ -75,13 +81,31 @@ class DaedalusLocalWebSocket:
         token_provider: TokenProvider,
         port: int = DEFAULT_WS_PORT,
         session: aiohttp.ClientSession | None = None,
+        *,
+        fingerprint: bytes | None = None,
+        on_fingerprint: Callable[[bytes], None] | None = None,
+        on_identity_changed: Callable[[bool], None] | None = None,
     ) -> None:
-        """Initialize local WebSocket manager."""
+        """Initialize the local connection.
+
+        ``fingerprint`` is the SHA-256 of the machine's certificate, recorded the
+        first time the machine accepted the token. When set, only a server with
+        exactly that certificate is sent the token. When not set, the first
+        machine that accepts the token is trusted and ``on_fingerprint`` is told
+        so it can be saved (trust on first use). ``on_identity_changed(True)``
+        is called when the server at this address presents a different
+        certificate, and ``(False)`` once the trusted one is back.
+        """
         self._host = host
         self._port = port
         self._serial_number = serial_number
         self._token_provider = token_provider
         self._refresh_token = False
+        self._fingerprint = fingerprint
+        self._on_fingerprint = on_fingerprint
+        self._on_identity_changed = on_identity_changed
+        self.identity_mismatch = False
+        self._pending_fingerprint: bytes | None = None
         self._session = session
         self._owns_session = False
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -134,6 +158,11 @@ class DaedalusLocalWebSocket:
             self._owns_session = True
         return self._session
 
+    def _set_identity_mismatch(self, mismatch: bool) -> None:
+        self.identity_mismatch = mismatch
+        if self._on_identity_changed is not None:
+            self._on_identity_changed(mismatch)
+
     def _create_ssl_context(self) -> ssl.SSLContext:
         """Create trust-all SSL context matching ESP32 self-signed certificate."""
         ctx = ssl.create_default_context()
@@ -179,6 +208,17 @@ class DaedalusLocalWebSocket:
                 delay = DEFAULT_RETRY_DELAY
             except asyncio.CancelledError:
                 break
+            except aiohttp.ServerFingerprintMismatch:
+                # Something else answers at this address. Never send it the token.
+                await self._disconnect()
+                if not self.identity_mismatch:
+                    _LOGGER.warning(
+                        "The device at %s is not the coffee machine Home Assistant trusts "
+                        "(its certificate changed). Not connecting.",
+                        self._host,
+                    )
+                    self._set_identity_mismatch(True)
+                await asyncio.sleep(MAX_RECONNECT_DELAY)
             except DaedalusLocalAuthError as err:
                 await self._disconnect()
                 if not self._refresh_token:
@@ -200,17 +240,26 @@ class DaedalusLocalWebSocket:
     async def _connect_and_listen(self) -> None:
         """Connect to appliance WebSocket, authenticate, and process messages."""
         session = await self._get_session()
-        ssl_ctx = self._create_ssl_context()
+        # The machine's certificate is self-signed, so the CA check can't
+        # identify it. Pin its exact certificate instead once it is known.
+        ssl_check: ssl.SSLContext | aiohttp.Fingerprint = (
+            aiohttp.Fingerprint(self._fingerprint)
+            if self._fingerprint
+            else self._create_ssl_context()
+        )
         url = f"wss://{self._host}:{self._port}{DEFAULT_WS_PATH}"
 
         _LOGGER.debug("Connecting to Daedalus local WebSocket at %s", url)
         async with session.ws_connect(
             url,
-            ssl=ssl_ctx,
+            ssl=ssl_check,
             timeout=aiohttp.ClientWSTimeout(ws_close=DEFAULT_TIMEOUT),
             heartbeat=30.0,
         ) as ws:
             self._ws = ws
+            self._pending_fingerprint = _peer_fingerprint(ws)
+            if self.identity_mismatch:
+                self._set_identity_mismatch(False)
             # Step 1: authenticate with the account token. The machine checks
             # it itself and answers {"Message": "auth", "Response": "OK", "ConnectionId": n}.
             token = await self._token_provider(self._refresh_token)
@@ -244,6 +293,12 @@ class DaedalusLocalWebSocket:
             self._connection_id = data["ConnectionId"]
             self._is_connected = True
             self._refresh_token = False
+            if self._fingerprint is None and self._pending_fingerprint is not None:
+                # First machine to accept this account's token: trust its certificate.
+                self._fingerprint = self._pending_fingerprint
+                _LOGGER.info("Trusting the coffee machine's certificate at %s", self._host)
+                if self._on_fingerprint is not None:
+                    self._on_fingerprint(self._fingerprint)
             _LOGGER.info(
                 "Connected to coffee machine at %s over the home network (ConnectionId %s)",
                 self._host,

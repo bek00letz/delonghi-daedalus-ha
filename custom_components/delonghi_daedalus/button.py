@@ -18,7 +18,6 @@ from .const import (
     RECIPE_ESPRESSO,
     RECIPE_HOT_WATER,
     RECIPE_LONG,
-    RECIPE_NAMES,
     RECIPE_SIMPLE_COFFEE,
 )
 from .coordinator import DaedalusCoordinator
@@ -78,7 +77,8 @@ class DaedalusBrewButton(CoordinatorEntity[DaedalusCoordinator], ButtonEntity):
     @property
     def available(self) -> bool:
         """Button is available when machine is powered on and locally connected."""
-        return self.coordinator.data.is_local_connected and self.coordinator.data.is_on
+        # Unknown power state still allows a try; the machine answers if it can't brew.
+        return self.coordinator.data.is_local_connected and self.coordinator.data.is_on is not False
 
     async def async_press(self) -> None:
         """Trigger brewing the assigned recipe."""

@@ -9,7 +9,6 @@ from typing import Any
 
 from ..const import (
     RECIPE_NAMES,
-    STATE_OFFLINE,
     STATE_READY,
     STATE_STANDBY,
 )
@@ -201,8 +200,9 @@ class MachineStatus:
 class MachineState:
     """Comprehensive snapshot of coffee machine state."""
 
-    is_on: bool = False
-    operational_state: str = STATE_OFFLINE
+    # None means "not known yet": nothing has reported it since startup.
+    is_on: bool | None = None
+    operational_state: str | None = None
     is_local_connected: bool = False
     is_cloud_online: bool = False
     last_drink: BeverageReport | None = None

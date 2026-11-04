@@ -9,12 +9,14 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import aiohttp_client
+from homeassistant.util import dt as dt_util
 
 from .api.client import (
     DaedalusApiError,
     DaedalusAuthError,
     DaedalusCloudClient,
     DaedalusConnectionError,
+    TOKEN_RENEW_BEFORE,
 )
 from .api.models import DaedalusAppliance
 from .const import (
@@ -29,6 +31,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import DaedalusCoordinator
+from .storage import DaedalusStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,23 +45,37 @@ PLATFORMS: list[Platform] = [
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up De'Longhi Daedalus from a config entry."""
-    session = aiohttp_client.async_get_clientsession(hass)
-    cloud_client = DaedalusCloudClient(session=session)
-
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
+    store = DaedalusStore(hass, entry.entry_id)
+    await store.async_load()
+    cloud_client = DaedalusCloudClient(
+        aiohttp_client.async_get_clientsession(hass),
+        token=store.token,
+        credentials=(username, password),
+        on_token=store.set_token,
+    )
 
-    # Authenticate with cloud. Network trouble at boot is temporary, so Home
-    # Assistant retries on its own; rejected credentials will not fix themselves.
-    try:
-        await cloud_client.async_authenticate(username, password)
-    except DaedalusAuthError as err:
-        # Home Assistant shows a "sign in again" prompt for this entry.
-        raise ConfigEntryAuthFailed(
-            "De’Longhi no longer accepts the saved password"
-        ) from err
-    except (DaedalusConnectionError, DaedalusApiError) as err:
-        raise ConfigEntryNotReady(f"Couldn’t reach De’Longhi cloud: {err}") from err
+    # Sign in only when there's no saved token or it's close to expiring.
+    # Without the internet, a saved token that hasn't expired keeps local
+    # control working; rejected credentials won't fix themselves.
+    if not cloud_client.token_valid(TOKEN_RENEW_BEFORE):
+        try:
+            await cloud_client.async_authenticate(username, password)
+        except DaedalusAuthError as err:
+            # Home Assistant shows a "sign in again" prompt for this entry.
+            raise ConfigEntryAuthFailed(
+                "De’Longhi no longer accepts the saved password"
+            ) from err
+        except (DaedalusConnectionError, DaedalusApiError) as err:
+            if not cloud_client.token_valid():
+                raise ConfigEntryNotReady(f"Couldn’t reach De’Longhi cloud: {err}") from err
+            _LOGGER.warning(
+                "Couldn’t reach De’Longhi cloud (%s). Using the saved token, which works "
+                "until %s; it renews when the cloud is back",
+                err,
+                dt_util.utc_from_timestamp(cloud_client.token_expires or 0).date(),
+            )
 
     # Determine active IP (options take precedence over data)
     device_ip = entry.options.get(CONF_DEVICE_IP, entry.data.get(CONF_DEVICE_IP)) or None
@@ -79,6 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         cloud_client=cloud_client,
         appliance=appliance,
         poll_interval=poll_interval,
+        store=store,
     )
 
     await coordinator.async_start()
@@ -100,6 +118,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_stop()
 
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the saved token and certificate when the integration is removed."""
+    await DaedalusStore(hass, entry.entry_id).async_remove()
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:

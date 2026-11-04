@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 import logging
 from typing import Any
@@ -26,11 +27,13 @@ from .api.client import (
     DaedalusConnectionError,
 )
 from .api.models import DaedalusAppliance
+from .local_network import async_find_local_machine
 from .const import (
     CONF_DEVICE_IP,
     CONF_MODEL,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
+    CONF_RETRUST_MACHINE,
     CONF_SERIAL_NUMBER,
     CONF_THING_NAME,
     CONF_USERNAME,
@@ -60,6 +63,10 @@ class DaedalusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._password: str | None = None
         self._device_ip: str | None = None
         self._devices: list[DaedalusAppliance] = []
+        self._client: DaedalusCloudClient | None = None
+        self._device: DaedalusAppliance | None = None
+        self._search: asyncio.Task[tuple[str, bytes] | None] | None = None
+        self._asked_for_address = False
 
     async def _async_sign_in(
         self, username: str, password: str
@@ -72,6 +79,7 @@ class DaedalusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             await client.async_authenticate(username, password)
             devices = await client.async_get_devices()
+            self._client = client
         except DaedalusAccountLockedError as err:
             _LOGGER.warning("De'Longhi paused sign-ins for this account: %s", err)
             return [], {"base": "account_locked"}
@@ -169,9 +177,63 @@ class DaedalusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _create_entry_for_device(self, device: DaedalusAppliance) -> FlowResult:
-        """Create configuration entry for the specified appliance."""
+        """Find the machine on the home network if needed, then create the entry."""
         await self.async_set_unique_id(device.serial_number)
         self._abort_if_unique_id_configured()
+        self._device = device
+
+        if not self._device_ip and self._client is not None:
+            return await self.async_step_search()
+        return self._create_entry()
+
+    async def async_step_search(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Look for the machine on the network, with a progress screen while it runs."""
+        assert self._device is not None and self._client is not None
+        if self._search is None:
+            self._search = self.hass.async_create_task(
+                async_find_local_machine(
+                    self.hass,
+                    self._device.serial_number,
+                    token_provider=self._client.async_get_token,
+                )
+            )
+        if not self._search.done():
+            return self.async_show_progress(
+                step_id="search", progress_action="searching", progress_task=self._search
+            )
+        try:
+            found = self._search.result()
+        except Exception:
+            _LOGGER.exception("Searching for the coffee machine failed")
+            found = None
+        if found is None:
+            return self.async_show_progress_done(next_step_id="local_address")
+        self._device_ip = found[0]
+        return self.async_show_progress_done(next_step_id="finish")
+
+    async def async_step_finish(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Create the entry once the machine has been found."""
+        return self._create_entry()
+
+    async def async_step_local_address(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Ask for the machine's address when the search didn't find it."""
+        # Arriving from the search screen also passes an (empty) answer, so only
+        # treat it as the person's answer once the form has actually been shown.
+        if user_input is not None and self._asked_for_address:
+            self._device_ip = user_input.get(CONF_DEVICE_IP, "").strip() or None
+            return self._create_entry()
+        self._asked_for_address = True
+        return self.async_show_form(
+            step_id="local_address",
+            data_schema=vol.Schema({vol.Optional(CONF_DEVICE_IP): str}),
+        )
+
+    def _create_entry(self) -> FlowResult:
+        """Create the configuration entry for the chosen machine."""
+        device = self._device
+        assert device is not None
 
         entry_data = {
             CONF_USERNAME: self._username,
@@ -204,6 +266,10 @@ class DaedalusOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage integration options."""
         if user_input is not None:
+            if user_input.pop(CONF_RETRUST_MACHINE, False):
+                coordinator = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id)
+                if coordinator is not None and coordinator.store is not None:
+                    await coordinator.store.async_forget_machine()
             return self.async_create_entry(title="", data=user_input)
 
         current_ip = self._config_entry.options.get(
@@ -219,6 +285,7 @@ class DaedalusOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(CONF_POLL_INTERVAL, default=current_poll): vol.All(
                     vol.Coerce(int), vol.Range(min=10, max=300)
                 ),
+                vol.Optional(CONF_RETRUST_MACHINE, default=False): bool,
             }
         )
 

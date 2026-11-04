@@ -67,12 +67,12 @@ class DaedalusStatusSensor(DaedalusBaseSensor):
         super().__init__(coordinator, "status")
 
     @property
-    def native_value(self) -> str:
-        """Return the machine's own status when it has reported one."""
+    def native_value(self) -> str | None:
+        """Return the machine's own status; unknown until something has reported it."""
         state = self.coordinator.data
         if state.status is not None:
             return state.status.display_status
-        return state.operational_state.capitalize()
+        return state.operational_state.capitalize() if state.operational_state else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

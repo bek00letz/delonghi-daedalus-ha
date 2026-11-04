@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
+import time
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api.client import (
     DaedalusApiError,
@@ -27,11 +29,14 @@ from .api.models import (
     MachineStatus,
 )
 from .api.websocket import DaedalusCommandError, DaedalusLocalWebSocket
+from .local_network import async_find_local_machine
+from .storage import DaedalusStore
+
+# Search for the machine after it's been out of reach this long, at most this often.
+SEARCH_AFTER = 5 * 60
+SEARCH_EVERY = 30 * 60
 from .const import (
     CONF_DEVICE_IP,
-    CONF_MODEL,
-    CONF_SERIAL_NUMBER,
-    CONF_THING_NAME,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     RESPONSE_BEVERAGE_REPORT,
@@ -42,7 +47,6 @@ from .const import (
     STATE_BREWING,
     STATE_OFFLINE,
     STATE_READY,
-    STATE_STANDBY,
     TURN_ON_OFF_STANDBY,
     TURN_ON_OFF_WAKE,
 )
@@ -60,6 +64,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         cloud_client: DaedalusCloudClient,
         appliance: DaedalusAppliance,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
+        store: DaedalusStore | None = None,
     ) -> None:
         """Initialize Daedalus coordinator."""
         super().__init__(
@@ -73,6 +78,9 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self.cloud_client = cloud_client
         self.appliance = appliance
         self.state = MachineState()
+        self.store = store
+        self._unreachable_since: float | None = None
+        self._last_search = 0.0
 
         self._local_ws: DaedalusLocalWebSocket | None = None
         self._unregister_ws_cb: Any | None = None
@@ -86,8 +94,27 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             host=host,
             serial_number=self.appliance.serial_number,
             token_provider=self.cloud_client.async_get_token,
+            fingerprint=self.store.machine_fingerprint if self.store else None,
+            on_fingerprint=self.store.set_machine_fingerprint if self.store else None,
+            on_identity_changed=self._identity_changed,
         )
         self._unregister_ws_cb = self._local_ws.register_callback(self._handle_ws_message)
+
+    def _identity_changed(self, mismatch: bool) -> None:
+        """Show (or clear) a repair notice when the machine's certificate changes."""
+        issue_id = f"machine_identity_changed_{self.appliance.serial_number}"
+        if not mismatch:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="machine_identity_changed",
+            translation_placeholders={"host": self.appliance.local_ip or ""},
+        )
 
     async def async_start(self) -> None:
         """Start local WebSocket listener and initial coordinator refresh."""
@@ -156,6 +183,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
 
     async def _async_update_data(self) -> MachineState:
         """Fetch latest status from cloud and verify local socket."""
+        await self.cloud_client.async_renew_if_due()
         try:
             # Query cloud for device online status and metadata
             devices = await self.cloud_client.async_get_devices()
@@ -167,23 +195,69 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             if target_device:
                 self.state.is_cloud_online = target_device.status.upper() == "ONLINE"
                 self.appliance.status = target_device.status
-                if not self.state.is_cloud_online and not self.state.is_local_connected:
-                    self.state.operational_state = STATE_OFFLINE
-                elif self.state.operational_state == STATE_OFFLINE:
-                    self.state.operational_state = STATE_STANDBY if not self.state.is_on else STATE_READY
+                self._update_reachability()
 
         except DaedalusAuthError as err:
             raise ConfigEntryAuthFailed(f"De'Longhi no longer accepts the saved password: {err}") from err
         except (DaedalusConnectionError, DaedalusApiError) as err:
             _LOGGER.debug("Cloud poll failed (continuing with local state): %s", err)
 
-        # Update local connection state
         if self._local_ws:
             self.state.is_local_connected = self._local_ws.is_connected
-            if self.state.is_local_connected and self.state.operational_state == STATE_OFFLINE:
-                self.state.operational_state = STATE_STANDBY if not self.state.is_on else STATE_READY
-
+        self._update_reachability()
+        self._maybe_search_for_machine()
         return self.state
+
+    def _maybe_search_for_machine(self) -> None:
+        """Look for the machine on the network when it isn't where we expect it.
+
+        Runs when no address is set, or after the machine has been unreachable
+        at its address (or answered with the wrong certificate) for a while,
+        e.g. because the router gave it a new address. At most every 30 minutes.
+        """
+        now = time.monotonic()
+        lost = self._local_ws is None or (
+            not self._local_ws.is_connected or self._local_ws.identity_mismatch
+        )
+        if not lost:
+            self._unreachable_since = None
+            return
+        self._unreachable_since = self._unreachable_since or now
+        waited = self._local_ws is None or now - self._unreachable_since >= SEARCH_AFTER
+        if waited and now - self._last_search >= SEARCH_EVERY and self.config_entry:
+            self._last_search = now
+            self.config_entry.async_create_background_task(
+                self.hass, self._async_search_for_machine(), "delonghi_daedalus search"
+            )
+
+    async def _async_search_for_machine(self) -> None:
+        fingerprint = self.store.machine_fingerprint if self.store else None
+        if fingerprint is None and not self.cloud_client.token_valid():
+            return  # can't confirm a candidate without a token
+        found = await async_find_local_machine(
+            self.hass,
+            self.appliance.serial_number,
+            fingerprint=fingerprint,
+            token_provider=None if fingerprint else self.cloud_client.async_get_token,
+        )
+        if found is None or found[0] == self.appliance.local_ip or self.config_entry is None:
+            return
+        _LOGGER.info("Found the coffee machine at a new address: %s", found[0])
+        # Saving the address reloads the integration, which connects there.
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, options={**self.config_entry.options, CONF_DEVICE_IP: found[0]}
+        )
+
+    def _update_reachability(self) -> None:
+        """Mark the machine offline when neither path reaches it; never guess on or off."""
+        reachable = self.state.is_cloud_online or self.state.is_local_connected
+        if not reachable:
+            self.state.operational_state = STATE_OFFLINE
+        elif self.state.operational_state == STATE_OFFLINE:
+            # Back in reach: the old state is stale until the machine reports again.
+            self.state.operational_state = None
+            if self.state.status is None:
+                self.state.is_on = None
 
     async def _async_command(self, send: Callable[[DaedalusLocalWebSocket], Awaitable[Any]]) -> None:
         """Run one local command; turn a failure into a message the person can act on."""

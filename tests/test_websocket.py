@@ -8,16 +8,10 @@ anything else gets {"Response": "KO"}.
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import ssl
-from typing import Any
 
-from aiohttp import WSMsgType, web
+from aiohttp import web
 from aiohttp.test_utils import TestServer
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
 import pytest
 
 from custom_components.delonghi_daedalus.api import websocket as websocket_module
@@ -28,85 +22,20 @@ from custom_components.delonghi_daedalus.api.websocket import (
 
 pytestmark = pytest.mark.usefixtures("socket_enabled")
 
-SERIAL = "SN0001234567"
-GOOD_TOKEN = "fresh-token"
+from tests.fake_machine import GOOD_TOKEN, SERIAL, FakeMachine, make_tls
 
 
 @pytest.fixture(scope="module")
-def machine_tls(tmp_path_factory) -> ssl.SSLContext:
-    """A self-signed certificate, like the one the machine presents."""
-    key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "AWS IoT Certificate")])
-    now = dt.datetime.now(dt.UTC)
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - dt.timedelta(days=1))
-        .not_valid_after(now + dt.timedelta(days=1))
-        .sign(key, hashes.SHA256())
-    )
-    folder = tmp_path_factory.mktemp("tls")
-    (folder / "cert.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    (folder / "key.pem").write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-    )
-    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    ctx.load_cert_chain(folder / "cert.pem", folder / "key.pem")
-    return ctx
+def machine_cert(tmp_path_factory) -> tuple[ssl.SSLContext, bytes]:
+    return make_tls(tmp_path_factory.mktemp("tls"))
 
 
-class FakeMachine:
-    """Answers the auth handshake and records every message it receives."""
-
-    def __init__(self) -> None:
-        self.received: list[dict[str, Any]] = []
-        self.authed = asyncio.Event()
-        self.command = asyncio.Event()
-        # How to answer commands: "OK", "KO", or None to stay silent.
-        self.reply: str | None = "OK"
-
-    async def handler(self, request: web.Request) -> web.WebSocketResponse:
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-        async for msg in ws:
-            if msg.type != WSMsgType.TEXT:
-                continue
-            data = msg.json()
-            self.received.append(data)
-            if data.get("Message") == "auth":
-                ok = data.get("AuthToken") == GOOD_TOKEN and data.get("SerialNo") == SERIAL
-                await ws.send_json(
-                    {"Message": "auth", "Response": "OK", "ConnectionId": 7}
-                    if ok
-                    else {"Message": "auth", "Response": "KO"}
-                )
-                if ok:
-                    self.authed.set()
-            else:
-                self.command.set()
-                if "ConnectionId" not in data:
-                    # What the real machine does: no RequestId in this answer.
-                    await ws.send_json({"Message": data["Message"], "Response": "UNAUTHORIZED"})
-                elif self.reply is not None:
-                    await ws.send_json(
-                        {
-                            "Message": f"{data['Message']}Response",
-                            "Response": self.reply,
-                            "AppId": "MCL",
-                            "RequestId": data["RequestId"],
-                        }
-                    )
-        return ws
+@pytest.fixture(scope="module")
+def machine_tls(machine_cert) -> ssl.SSLContext:
+    return machine_cert[0]
 
 
-async def _connect(machine_tls, tokens: list[str]):
+async def _connect(machine_tls, tokens: list[str], **local_kwargs):
     """Start a fake machine and a local connection whose token provider hands out ``tokens``."""
     machine = FakeMachine()
     app = web.Application()
@@ -121,7 +50,11 @@ async def _connect(machine_tls, tokens: list[str]):
         return tokens[min(len(calls), len(tokens)) - 1]
 
     local = DaedalusLocalWebSocket(
-        host="127.0.0.1", serial_number=SERIAL, token_provider=provider, port=server.port
+        host="127.0.0.1",
+        serial_number=SERIAL,
+        token_provider=provider,
+        port=server.port,
+        **local_kwargs,
     )
     await local.async_start()
     return machine, server, local, calls
@@ -234,6 +167,57 @@ async def test_unauthorized_answer_without_request_id(machine_tls) -> None:
         with pytest.raises(DaedalusCommandError) as err:
             await local.async_turn_on()
         assert err.value.reason == "unauthorized"
+    finally:
+        await local.async_stop()
+        await server.close()
+
+
+async def test_first_machine_to_accept_the_token_is_trusted(machine_tls, machine_cert) -> None:
+    saved: list[bytes] = []
+    machine, server, local, _ = await _connect(
+        machine_tls, [GOOD_TOKEN], on_fingerprint=saved.append
+    )
+    try:
+        await asyncio.wait_for(machine.authed.wait(), 5)
+        for _ in range(100):
+            if saved:
+                break
+            await asyncio.sleep(0.01)
+        assert saved == [machine_cert[1]]
+    finally:
+        await local.async_stop()
+        await server.close()
+
+
+async def test_trusted_certificate_connects(machine_tls, machine_cert) -> None:
+    machine, server, local, _ = await _connect(
+        machine_tls, [GOOD_TOKEN], fingerprint=machine_cert[1]
+    )
+    try:
+        await asyncio.wait_for(machine.authed.wait(), 5)
+    finally:
+        await local.async_stop()
+        await server.close()
+
+
+async def test_different_certificate_never_gets_the_token(machine_tls) -> None:
+    """Another device at the machine's address: refuse, report, and send nothing."""
+    changes: list[bool] = []
+    machine, server, local, calls = await _connect(
+        machine_tls,
+        [GOOD_TOKEN],
+        fingerprint=b"\x00" * 32,
+        on_identity_changed=changes.append,
+    )
+    try:
+        for _ in range(200):
+            if changes:
+                break
+            await asyncio.sleep(0.01)
+        assert changes == [True]
+        assert local.identity_mismatch
+        assert machine.received == []  # the token was never sent
+        assert calls == []  # it wasn't even fetched
     finally:
         await local.async_stop()
         await server.close()

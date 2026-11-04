@@ -95,6 +95,7 @@ class StubLocal:
     def __init__(self, **_: Any) -> None:
         self.callbacks: list[Callable[[dict[str, Any]], None]] = []
         self.is_connected = True
+        self.identity_mismatch = False
         self.async_turn_on = AsyncMock(return_value={"Response": "OK"})
 
     def register_callback(self, cb):
@@ -158,8 +159,12 @@ def _state(hass: HomeAssistant, platform: str, key: str):
 
 
 async def test_status_report_drives_entities(hass: HomeAssistant, machine: StubLocal) -> None:
-    # Before any report, alarms are unknown rather than a reassuring "OK".
+    # Before any report nothing is guessed: no reassuring "OK", no made-up "Standby".
     assert _state(hass, "binary_sensor", "alarm_water_tank_empty").state == "unknown"
+    assert _state(hass, "sensor", "status").state == "unknown"
+    assert _state(hass, "switch", "power").state == "unknown"
+    # An unknown power state still lets you try to brew; the machine says if it can't.
+    assert _state(hass, "button", "brew_coffee_xl").state != "unavailable"
 
     machine.push(_report("Standby", 0, Filter=True))
     await hass.async_block_till_done()

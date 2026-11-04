@@ -17,6 +17,7 @@ CONF_SERIAL_NUMBER: Final = "serial_number"
 CONF_THING_NAME: Final = "thing_name"
 CONF_MODEL: Final = "model"
 CONF_POLL_INTERVAL: Final = "poll_interval"
+CONF_RETRUST_MACHINE: Final = "retrust_machine"
 
 # Default Network Settings
 DEFAULT_WS_PORT: Final = 443

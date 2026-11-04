@@ -7,10 +7,10 @@
         "data": {
           "username": "Email",
           "password": "Password",
-          "device_ip": "Appliance IP Address (Optional)"
+          "device_ip": "Coffee machine’s IP address (optional)"
         },
         "data_description": {
-          "device_ip": "The local network IP address of your coffee machine for instantaneous, zero-cloud latency control."
+          "device_ip": "Leave empty to find the machine on your network automatically."
         }
       },
       "select_device": {
@@ -26,6 +26,13 @@
         "data": {
           "password": "Password"
         }
+      },
+      "local_address": {
+        "title": "Coffee machine not found",
+        "description": "Home Assistant couldn’t find your coffee machine on the network. Check that it’s on and connected to Wi-Fi, then enter its IP address (your router’s device list shows it). Leave empty to continue without control over your home network; Home Assistant keeps looking.",
+        "data": {
+          "device_ip": "IP address"
+        }
       }
     },
     "error": {
@@ -39,6 +46,9 @@
     "abort": {
       "already_configured": "This coffee machine is already configured in Home Assistant.",
       "reauth_successful": "Signed in. Your coffee machine is reconnected."
+    },
+    "progress": {
+      "searching": "Looking for your coffee machine on your network. This takes a few seconds."
     }
   },
   "options": {
@@ -48,11 +58,13 @@
         "description": "Adjust local network connectivity and cloud update polling interval.",
         "data": {
           "device_ip": "Appliance IP Address",
-          "poll_interval": "Cloud Polling Interval (seconds)"
+          "poll_interval": "Cloud Polling Interval (seconds)",
+          "retrust_machine": "Trust the coffee machine again"
         },
         "data_description": {
           "device_ip": "The local network IP address of your coffee machine.",
-          "poll_interval": "How frequently to refresh appliance status from De’Longhi cloud services."
+          "poll_interval": "How frequently to refresh appliance status from De’Longhi cloud services.",
+          "retrust_machine": "Only after resetting or re-pairing the machine. Home Assistant then trusts the next machine at this address that accepts your De’Longhi account."
         }
       }
     }
@@ -190,6 +202,12 @@
     },
     "command_connection_lost": {
       "message": "The connection to the coffee machine dropped. Try again in a moment."
+    }
+  },
+  "issues": {
+    "machine_identity_changed": {
+      "title": "Coffee machine’s identity changed",
+      "description": "The device at {host} isn’t the coffee machine Home Assistant trusts, so Home Assistant won’t send it your De’Longhi token.\\n\\nIf you reset or re-paired the machine, open the De’Longhi Daedalus integration’s options and turn on **Trust the coffee machine again**. If you didn’t, something on your network may be posing as the machine."
     }
   }
 }

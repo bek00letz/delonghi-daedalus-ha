@@ -19,6 +19,7 @@ from custom_components.delonghi_daedalus.api.client import (
 )
 from custom_components.delonghi_daedalus.api.models import DaedalusAppliance
 from custom_components.delonghi_daedalus.const import (
+    CONF_DEVICE_IP,
     CONF_PASSWORD,
     CONF_SERIAL_NUMBER,
     CONF_THING_NAME,
@@ -27,6 +28,7 @@ from custom_components.delonghi_daedalus.const import (
 )
 
 CLIENT = "custom_components.delonghi_daedalus.config_flow.DaedalusCloudClient"
+SEARCH = "custom_components.delonghi_daedalus.config_flow.async_find_local_machine"
 EMAIL = "user@example.com"
 SERIAL = "SN0001234567"
 
@@ -66,21 +68,64 @@ def entry(hass: HomeAssistant) -> MockConfigEntry:
 
 
 async def test_setup_creates_entry(hass: HomeAssistant) -> None:
+    """With no address typed in, the machine is found on the network."""
     mock, client = _cloud()
     try:
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_USERNAME: f"  {EMAIL} ", CONF_PASSWORD: "pw"}
-        )
+        with patch(SEARCH, return_value=("192.0.2.8", b"fp")) as search:
+            result = await hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": config_entries.SOURCE_USER}
+            )
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], {CONF_USERNAME: f"  {EMAIL} ", CONF_PASSWORD: "pw"}
+            )
     finally:
         mock.stop()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_USERNAME] == EMAIL
+    assert result["data"][CONF_DEVICE_IP] == "192.0.2.8"
     assert result["result"].unique_id == SERIAL
     client.async_authenticate.assert_awaited_once_with(EMAIL, "pw")
+    assert search.call_args.args[1] == SERIAL
+
+
+async def test_setup_with_address_skips_the_search(hass: HomeAssistant) -> None:
+    mock, _ = _cloud()
+    try:
+        with patch(SEARCH) as search:
+            result = await hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": config_entries.SOURCE_USER}
+            )
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"],
+                {CONF_USERNAME: EMAIL, CONF_PASSWORD: "pw", CONF_DEVICE_IP: "192.0.2.9"},
+            )
+    finally:
+        mock.stop()
+
+    assert result["data"][CONF_DEVICE_IP] == "192.0.2.9"
+    search.assert_not_called()
+
+
+async def test_machine_not_found_asks_for_address(hass: HomeAssistant) -> None:
+    mock, _ = _cloud()
+    try:
+        with patch(SEARCH, return_value=None):
+            result = await hass.config_entries.flow.async_init(
+                DOMAIN, context={"source": config_entries.SOURCE_USER}
+            )
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: "pw"}
+            )
+            assert result["type"] is FlowResultType.FORM
+            assert result["step_id"] == "local_address"
+            # Leaving it empty still sets up, just without local control for now.
+            result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    finally:
+        mock.stop()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_DEVICE_IP] is None
 
 
 async def test_setup_wrong_password_keeps_email(hass: HomeAssistant) -> None:

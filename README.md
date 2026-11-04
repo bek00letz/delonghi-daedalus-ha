@@ -3,7 +3,7 @@
 [![HACS Custom Repository](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/default)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
-> **Status: early, in active development.** Sign-in, power control over your home network, and machine status and alarms work on an Eletta Ultra (ECAM 470.85). Brewing from Home Assistant is not tested yet. Built on [sk7n4k3d’s original work](#credits).
+> **Status: early, in active development.** Sign-in, power control over your home network (including without internet), finding the machine automatically, and machine status and alarms work on an Eletta Ultra (ECAM 470.85). Brewing from Home Assistant is not tested yet. Built on [sk7n4k3d’s original work](#credits).
 
 A Home Assistant integration for modern De’Longhi smart bean-to-cup espresso machines built on the next-generation **Daedalus** architecture (such as the **Eletta Ultra ECAM 470.85** and appliances running the official *My Coffee Lounge* application).
 
@@ -59,8 +59,10 @@ Built with low-latency local control, instant state synchronization, and zero cl
 1. In Home Assistant, navigate to **Settings** → **Devices & Services** → **Add Integration**.
 2. Search for **De’Longhi Daedalus**.
 3. Enter your De’Longhi account credentials (*email* and *password* used in the My Coffee Lounge application).
-4. *(Optional but Recommended)* Enter your coffee machine’s **Local IP address** (e.g., `192.168.1.50`). Providing the local IP enables direct, instantaneous LAN2LAN communication with zero cloud latency.
-5. Click **Submit**. If multiple appliances are associated with your account, select the desired machine from the list.
+4. Leave **Coffee machine’s IP address** empty: Home Assistant finds the machine on your network (it takes a few seconds). If it can’t, it asks for the address, which your router’s device list shows.
+5. Click **Submit**. If several machines are linked to your account, choose one.
+
+If your router later gives the machine a new address, Home Assistant finds it again on its own.
 
 ---
 
@@ -78,7 +80,17 @@ Built with low-latency local control, instant state synchronization, and zero cl
 | **Binary sensor** | Home network connection, Cloud connection | Whether Home Assistant is connected to the machine directly and through De’Longhi’s cloud |
 | **Button** | Brew coffee XL, espresso, coffee, long coffee, doppio+, americano; Hot water | One-tap drinks (not yet tested) |
 
-The machine reports its status when something changes, for example when it wakes, warms up or brews. After Home Assistant restarts, alarms show *Unknown* until the next report.
+The machine reports its status when something changes, for example when it wakes, warms up or brews. After Home Assistant restarts, status and alarms show *Unknown* until the next report.
+
+---
+
+## Without internet
+
+Control over your home network keeps working when the internet or De’Longhi’s cloud is down:
+
+* **Power, brewing and settings keep working** for as long as the saved sign-in token is valid. Each token lasts 90 days, and Home Assistant renews it on its own whenever the internet is available and fewer than 30 days remain.
+* **The tradeoff is status after a restart.** The machine only reports its status when something changes, so after Home Assistant restarts, status and alarms stay *Unknown* until the machine next reports, for example when you wake it or brew. Reading the last status from De’Longhi’s cloud at startup is planned. That needs the internet, so offline, the *Unknown* gap stays.
+* **Setting up needs the internet once**, to sign in to your De’Longhi account. So does renewing the token: if Home Assistant can’t reach the cloud for the whole 90 days, local control stops until it can.
 
 ---
 
@@ -86,9 +98,10 @@ The machine reports its status when something changes, for example when it wakes
 
 * Commands go straight from Home Assistant to the coffee machine over your home network, encrypted with TLS.
 * The machine accepts your De’Longhi account’s sign-in token as its key, so Home Assistant signs in to De’Longhi’s cloud to get one. The token lasts 90 days and is renewed automatically.
-* Like every Home Assistant integration, your email and password are stored in Home Assistant’s configuration folder, which is not encrypted. Diagnostics downloads leave them out.
+* Home Assistant records your machine’s certificate the first time the machine accepts your token, and from then on only sends the token to a device presenting that exact certificate. If something else answers at the machine’s address, Home Assistant refuses it and shows a repair notice. After resetting or re-pairing the machine, turn on **Trust the coffee machine again** in the integration’s options.
+* When searching your network, Home Assistant only offers the token to devices with a coffee-machine certificate, and once your machine is known, it searches by certificate alone without sending the token anywhere.
+* Like every Home Assistant integration, your email, password and token are stored in Home Assistant’s configuration folder, which is not encrypted. Diagnostics downloads leave them out.
 * No analytics or tracking. Nothing is sent anywhere except De’Longhi’s own services and your machine.
-* Known gap: the integration does not yet verify the machine’s certificate, so on a compromised home network another device could pose as the machine and receive the token. This is the next thing being fixed.
 
 ---
 

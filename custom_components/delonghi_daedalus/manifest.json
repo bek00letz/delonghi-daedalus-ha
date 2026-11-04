@@ -1,11 +1,18 @@
 {
   "domain": "delonghi_daedalus",
   "name": "De'Longhi Daedalus",
-  "codeowners": ["@bek00letz"],
+  "codeowners": [
+    "@bek00letz"
+  ],
   "config_flow": true,
+  "dependencies": [
+    "network"
+  ],
   "documentation": "https://github.com/bek00letz/delonghi-daedalus-ha",
-  "issue_tracker": "https://github.com/bek00letz/delonghi-daedalus-ha/issues",
   "iot_class": "local_push",
-  "version": "0.3.1",
-  "requirements": ["aiohttp>=3.9.0"]
+  "issue_tracker": "https://github.com/bek00letz/delonghi-daedalus-ha/issues",
+  "requirements": [
+    "aiohttp>=3.9.0"
+  ],
+  "version": "0.4.0"
 }

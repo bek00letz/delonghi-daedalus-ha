@@ -56,6 +56,28 @@ def _move_old_buttons(hass: HomeAssistant, coordinator: DaedalusCoordinator) -> 
             registry.async_update_entity(entity_id, new_unique_id=new_unique_id)
 
 
+# 0.8.0 misread mug drinks' groups ("MUG HOT") and switched their buttons on.
+REPAIR_MUG_BUTTONS = "mug_buttons_off"
+
+
+@callback
+def _switch_off_extras_once(hass: HomeAssistant, coordinator: DaedalusCoordinator) -> None:
+    """Switch off mug and custom-slot buttons that 0.8.0 switched on, once."""
+    store = coordinator.store
+    if store is None or store.has_done(REPAIR_MUG_BUTTONS) or not coordinator.drinks.from_delonghi:
+        return
+    registry = er.async_get(hass)
+    serial = coordinator.appliance.serial_number
+    for drink in coordinator.drinks.drinks:
+        if drink.is_main:
+            continue
+        entity_id = registry.async_get_entity_id("button", DOMAIN, f"{serial}_{drink_key(drink.id)}")
+        entry = registry.async_get(entity_id) if entity_id else None
+        if entry and entry.disabled_by is None:
+            registry.async_update_entity(entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION)
+    store.mark_done(REPAIR_MUG_BUTTONS)
+
+
 @callback
 def _forget_missing_drinks(hass: HomeAssistant, entry: ConfigEntry, coordinator: DaedalusCoordinator) -> None:
     """Remove buttons for drinks De'Longhi's list says this machine doesn't make."""
@@ -86,6 +108,7 @@ async def async_setup_entry(
         new = [d for d in coordinator.drinks.drinks if d.id not in added]
         added.update(d.id for d in new)
         _forget_missing_drinks(hass, entry, coordinator)
+        _switch_off_extras_once(hass, coordinator)
         if new:
             async_add_entities(DaedalusDrinkButton(coordinator, d.id) for d in new)
 

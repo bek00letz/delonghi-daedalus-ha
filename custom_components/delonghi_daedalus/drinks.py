@@ -47,6 +47,18 @@ RETRY_AFTER = 3600  # after a failed attempt
 MAX_PHOTO_BYTES = 2 * 1024 * 1024
 PHOTO_TIMEOUT = aiohttp.ClientTimeout(total=30)
 PHOTO_DOWNLOADS_AT_ONCE = 4
+PNG_START = b"\x89PNG\r\n\x1a\n"
+PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"  # the closing chunk: a file without it is cut off
+
+
+def complete_png(data: bytes) -> bool:
+    """A whole PNG file: starts with the signature and ends with the closing chunk."""
+    return data.startswith(PNG_START) and data.endswith(PNG_END)
+
+
+def _version(data: bytes) -> str:
+    """Changes with the file, so browsers never keep showing an older (or broken) copy."""
+    return hashlib.sha256(data).hexdigest()[:10]
 
 # Stands in until De'Longhi's list arrives; numbers confirmed on an ECAM 470.85.
 BUILT_IN_DRINKS = tuple(
@@ -98,7 +110,7 @@ class DrinkList:
         self._session = session
         self._folder = photos_root(hass) / entry_id
         self._listeners: list[Callable[[], None]] = []
-        self._photos: dict[int, str] = {}  # drink → source link, for files on disk
+        self._photos: dict[int, tuple[str, str]] = {}  # drink → (source link, version) of whole files on disk
         self._last_attempt = 0.0
         self._task: asyncio.Task | None = None
         saved = (store.drinks if store else {}).get("drinks")
@@ -122,11 +134,10 @@ class DrinkList:
 
     def photo(self, drink_id: int) -> str | None:
         """The local address of a drink's photo, if it's been downloaded."""
-        source = self._photos.get(drink_id)
-        if source is None:
+        photo = self._photos.get(drink_id)
+        if photo is None:
             return None
-        version = hashlib.sha256(source.encode()).hexdigest()[:10]
-        return f"{PHOTO_URL_BASE}/{self._entry_id}/{drink_id}.png?v={version}"
+        return f"{PHOTO_URL_BASE}/{self._entry_id}/{drink_id}.png?v={photo[1]}"
 
     @callback
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -139,17 +150,35 @@ class DrinkList:
             listener()
 
     async def async_load_photos(self) -> None:
-        """Note which saved photos are still on disk (the cache can be cleared)."""
-        saved = self._store.photos if self._store else {}
-        present = await self._hass.async_add_executor_job(self._files_on_disk)
-        self._photos = {int(k): v for k, v in saved.items() if k.isdigit() and int(k) in present}
+        """Note which saved photos are on disk and whole; others download again.
 
-    def _files_on_disk(self) -> set[int]:
+        The cache folder can be cleared, and 0.8.0 saved photos cut off.
+        """
+        saved = self._store.photos if self._store else {}
+        on_disk = await self._hass.async_add_executor_job(self._files_on_disk)
+        self._photos = {
+            int(k): (source, on_disk[int(k)])
+            for k, source in saved.items()
+            if k.isdigit() and int(k) in on_disk
+        }
+
+    def _files_on_disk(self) -> dict[int, str]:
+        """{drink: version} for each whole photo in the folder."""
         try:
             names = os.listdir(self._folder)
         except OSError:
-            return set()
-        return {int(n[:-4]) for n in names if n.endswith(".png") and n[:-4].isdigit()}
+            return {}
+        found: dict[int, str] = {}
+        for name in names:
+            if not (name.endswith(".png") and name[:-4].isdigit()):
+                continue
+            try:
+                data = (self._folder / name).read_bytes()
+            except OSError:
+                continue
+            if complete_png(data):
+                found[int(name[:-4])] = _version(data)
+        return found
 
     @callback
     def maybe_refresh(
@@ -196,7 +225,7 @@ class DrinkList:
     async def _async_download_photos(self) -> bool:
         """Download photos that are new or changed; True if any arrived."""
         wanted = {d.id: d.photo_url for d in self._drinks.values() if d.photo_url}
-        todo = {k: v for k, v in wanted.items() if self._photos.get(k) != v}
+        todo = {k: v for k, v in wanted.items() if self._photos.get(k, ("",))[0] != v}
         if not todo:
             return False
         await self._hass.async_add_executor_job(lambda: self._folder.mkdir(parents=True, exist_ok=True))
@@ -207,15 +236,19 @@ class DrinkList:
                 data = await self._async_fetch_photo(url)
             if data is not None:
                 await self._hass.async_add_executor_job(self._write, drink_id, data)
-                self._photos[drink_id] = url
+                self._photos[drink_id] = (url, _version(data))
 
-        await asyncio.gather(*(one(k, v) for k, v in todo.items()))
+        # One photo failing in an unexpected way mustn't stop the others.
+        for failure in await asyncio.gather(*(one(k, v) for k, v in todo.items()), return_exceptions=True):
+            if isinstance(failure, Exception):
+                _LOGGER.debug("A drink photo couldn't be saved: %r", failure)
         if self._store:
-            self._store.set_photos({str(k): v for k, v in self._photos.items()})
-        return any(self._photos.get(k) == v for k, v in todo.items())
+            self._store.set_photos({str(k): v[0] for k, v in self._photos.items()})
+        return any(self._photos.get(k, ("",))[0] == v for k, v in todo.items())
 
     async def _async_fetch_photo(self, url: str) -> bytes | None:
-        """One photo, only if it's a PNG of reasonable size."""
+        """One whole photo, only if it's a complete PNG of reasonable size."""
+        data = bytearray()
         try:
             async with self._session.get(url, timeout=PHOTO_TIMEOUT) as resp:
                 if resp.status != 200 or resp.content_type != "image/png":
@@ -223,12 +256,14 @@ class DrinkList:
                 length = resp.headers.get("Content-Length", "")
                 if length.isdigit() and int(length) > MAX_PHOTO_BYTES:
                     return None
-                data = await resp.content.read(MAX_PHOTO_BYTES + 1)
+                # A photo arrives in pieces: read to the end, not just the first piece.
+                async for piece in resp.content.iter_chunked(64 * 1024):
+                    data += piece
+                    if len(data) > MAX_PHOTO_BYTES:
+                        return None
         except (aiohttp.ClientError, TimeoutError):
             return None
-        if len(data) > MAX_PHOTO_BYTES or not data.startswith(b"\x89PNG\r\n\x1a\n"):
-            return None
-        return data
+        return bytes(data) if complete_png(data) else None
 
     def _write(self, drink_id: int, data: bytes) -> None:
         target = self._folder / f"{drink_id}.png"

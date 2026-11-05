@@ -109,6 +109,15 @@ class DaedalusStore:
             self._data["photos"] = value
             self._save()
 
+    def has_done(self, task: str) -> bool:
+        """Whether a one-time repair has already run for this machine."""
+        return task in self._data.get("done", [])
+
+    @callback
+    def mark_done(self, task: str) -> None:
+        self._data["done"] = sorted({*self._data.get("done", []), task})
+        self._save()
+
     @callback
     def set_token(self, token: str) -> None:
         """Remember a new account token."""

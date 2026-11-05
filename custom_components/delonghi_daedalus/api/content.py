@@ -73,7 +73,7 @@ class Drink:
             return cls(
                 id=int(data["id"]),
                 name=data.get("name") if isinstance(data.get("name"), str) else None,
-                groups=frozenset(g for g in data.get("groups", []) if isinstance(g, str)),
+                groups=_groups(data.get("groups", [])),  # also repairs lists saved by 0.8.0
                 photo_url=data.get("photo_url") if isinstance(data.get("photo_url"), str) else None,
                 description=data.get("description") if isinstance(data.get("description"), str) else None,
             )
@@ -103,11 +103,12 @@ def _readable(original: str) -> str:
 
 
 def _groups(value: Any) -> frozenset[str]:
-    """Groups arrive as ["HOT", "COFFEE"], sometimes with two in one string ("HOME,MUG")."""
-    if not isinstance(value, list):
+    """Groups arrive as ["HOT", "COFFEE"], and mug drinks as ["HOME", "MUG HOT", …]:
+    two groups in one string, so split on commas and spaces."""
+    if not isinstance(value, (list, tuple, set, frozenset)):
         return frozenset()
     return frozenset(
-        part.strip().upper() for item in value if isinstance(item, str) for part in item.split(",") if part.strip()
+        part.upper() for item in value if isinstance(item, str) for part in re.split(r"[\s,]+", item) if part
     )
 
 

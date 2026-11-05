@@ -23,7 +23,10 @@ from custom_components.delonghi_daedalus.api.models import DaedalusAppliance
 from custom_components.delonghi_daedalus.const import DOMAIN
 from tests.helpers import SERIAL, StubLocal, entry_data, stored
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+PNG_START = b"\x89PNG\r\n\x1a\n"
+PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+PNG = PNG_START + b"\1" * 200_000 + PNG_END  # big enough to arrive in pieces
+CUT_OFF = PNG_START + b"\1" * 64  # the start of a photo, without its end
 CAPABILITIES = {"SKU": "0132250187", "FWUIVersion": "1.1.15", "FWWiFiVersion": "1.1.25", "FWMainboardVersion": "1.0.0"}
 PHOTO = "https://dam.delonghi.com/412x452/assets/{}.png"
 
@@ -50,7 +53,8 @@ RECIPES = {
                 _item(1, "Espresso", ["HOT", "COFFEE"]),
                 _item(8, "Latte Macchiato", ["HOT", "COFFEE", "MILK"]),
                 _item(39, None, ["HOT", "COFFEE", "MILK"], original="MilchKaffee"),
-                _item(82, "Mug Latte Macchiato", ["HOME,MUG", "HOT", "COFFEE", "MILK"]),
+                _item(82, "Mug Latte Macchiato", ["HOME", "MUG HOT", "COFFEE", "MILK"]),  # as De'Longhi writes it
+                _item(102, "Mug Iced Cappuccino", ["HOME", "MUG COLD", "COFFEE", "MILK"]),
                 _item(230, None, ["HOT", "COFFEE", "CUSTOM"], original="CustomBev1"),
                 _item(99, "Not on this machine", ["HOT"], display=False),
                 {"title": "broken", "drink": [{"drink_id": "x"}]},
@@ -71,10 +75,11 @@ PHOTOS = {
 
 def test_reading_the_drink_list() -> None:
     drinks = {d.id: d for d in parse_drinks(RECIPES)}
-    assert sorted(drinks) == [1, 8, 39, 82, 230]
+    assert sorted(drinks) == [1, 8, 39, 82, 102, 230]
     assert drinks[8].name == "Latte Macchiato" and drinks[8].is_main
     assert drinks[39].name == "Milch Kaffee"  # no display name: made readable
-    assert drinks[82].is_mug and not drinks[82].is_main  # "HOME,MUG" in one string
+    assert drinks[82].is_mug and not drinks[82].is_main  # "MUG HOT": two groups in one string
+    assert drinks[102].is_mug and "COLD" in drinks[102].groups
     assert drinks[230].name is None and drinks[230].is_custom
     assert parse_drinks({"entries": []}) == [] and parse_drinks("nonsense") == []
 
@@ -172,7 +177,7 @@ async def test_photos_download_once_and_show_on_the_buttons(
     hass: HomeAssistant, entry, stub_cloud, stub_content, aioclient_mock
 ) -> None:
     aioclient_mock.get(PHOTO.format(1), content=PNG, headers={"Content-Type": "image/png"})
-    aioclient_mock.get(PHOTO.format(8), content=b"<html>not a photo</html>", headers={"Content-Type": "image/png"})
+    aioclient_mock.get(PHOTO.format(8), content=CUT_OFF, headers={"Content-Type": "image/png"})
     machine = await _setup(hass, entry)
     stub_content.drinks = _list_from_delonghi()
     await _deliver_capabilities(hass, stub_cloud)
@@ -180,7 +185,7 @@ async def test_photos_download_once_and_show_on_the_buttons(
     picture = hass.states.get(_button(hass, 1)).attributes["entity_picture"]
     assert picture.startswith(f"/{DOMAIN}/drinks/{entry.entry_id}/1.png?v=")
     assert Path(hass.config.path(".cache", DOMAIN, entry.entry_id, "1.png")).read_bytes() == PNG
-    assert "entity_picture" not in hass.states.get(_button(hass, 8)).attributes  # refused: not a PNG
+    assert "entity_picture" not in hass.states.get(_button(hass, 8)).attributes  # refused: cut off
 
     # The last drink shows its name from the list and its photo.
     machine.push({"Message": "BeverageRequestReport", "RecipeId": 1, "ProfileId": 1})
@@ -236,3 +241,102 @@ async def test_the_card_reads_drinks_even_in_standby(
     assert latte["photo"].startswith(f"/{DOMAIN}/drinks/{entry.entry_id}/8.png")  # the photo still shows
     assert latte["groups"] == ["coffee", "hot", "milk"]
     assert only["status_entity_id"].startswith("sensor.") and only["power_entity_id"].startswith("switch.")
+    assert list(only["controls"]) == [
+        "power", "brew_profile", "coffee_temperature", "auto_off_timer",
+        "water_hardness", "sound", "energy_saving", "cup_warmer",
+    ]
+
+
+async def test_mug_buttons_switched_on_by_0_8_0_are_switched_off_once(
+    hass: HomeAssistant, entry, hass_storage, stub_content
+) -> None:
+    """0.8.0 saved mug groups as "MUG HOT" and switched those buttons on."""
+    saved = [d.as_dict() for d in _list_from_delonghi()]
+    for drink in saved:
+        if drink["id"] in (82, 102):
+            drink["groups"] = ["COFFEE", "HOME", "MILK", "MUG HOT" if drink["id"] == 82 else "MUG COLD"]
+    stored(hass_storage, entry.entry_id, drinks={"key": [], "fetched": 0, "drinks": saved})
+    registry = er.async_get(hass)
+    mug = registry.async_get_or_create("button", DOMAIN, f"{SERIAL}_drink_82", config_entry=entry)
+    latte = registry.async_get_or_create("button", DOMAIN, f"{SERIAL}_drink_8", config_entry=entry)
+    await _setup(hass, entry)
+    assert registry.async_get(mug.entity_id).disabled_by is er.RegistryEntryDisabler.INTEGRATION
+    assert registry.async_get(latte.entity_id).disabled_by is None
+
+    # Switched back on by the person: the repair doesn't run again.
+    registry.async_update_entity(mug.entity_id, disabled_by=None)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    await _setup(hass, entry)
+    assert registry.async_get(mug.entity_id).disabled_by is None
+
+
+async def test_cut_off_photos_from_0_8_0_download_again(
+    hass: HomeAssistant, entry, hass_storage, stub_cloud, stub_content, aioclient_mock
+) -> None:
+    """0.8.0 kept only the first piece of each photo; those are found and replaced."""
+    folder = Path(hass.config.path(".cache", DOMAIN, entry.entry_id))
+    folder.mkdir(parents=True)
+    (folder / "1.png").write_bytes(CUT_OFF)
+    saved = [d.as_dict() for d in _list_from_delonghi()]
+    stored(hass_storage, entry.entry_id, drinks={"key": [], "fetched": 0, "drinks": saved}, photos={"1": PHOTO.format(1)})
+    aioclient_mock.get(PHOTO.format(1), content=PNG, headers={"Content-Type": "image/png"})
+    await _setup(hass, entry)
+    assert "entity_picture" not in hass.states.get(_button(hass, 1)).attributes  # the cut-off file isn't offered
+
+    stub_content.drinks = _list_from_delonghi()
+    await _deliver_capabilities(hass, stub_cloud)
+    assert (folder / "1.png").read_bytes() == PNG
+    assert "?v=" in hass.states.get(_button(hass, 1)).attributes["entity_picture"]
+
+
+class _Pieces:
+    """A response body arriving in pieces, as over a real network."""
+
+    def __init__(self, parts: list[bytes]) -> None:
+        self.parts = parts
+
+    async def read(self, n: int = -1) -> bytes:
+        return self.parts[0]  # like a socket: only what has arrived so far
+
+    async def iter_chunked(self, n: int):
+        for part in self.parts:
+            yield part
+
+
+class _PiecesSession:
+    def __init__(self, parts: list[bytes]) -> None:
+        self.parts = parts
+
+    def get(self, url: str, **kwargs: Any):
+        parts = self.parts
+
+        class Response:
+            status = 200
+            content_type = "image/png"
+            headers: dict[str, str] = {}
+            content = _Pieces(parts)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+        return Response()
+
+
+@pytest.mark.parametrize(
+    ("parts", "kept"),
+    [
+        ([PNG[:16_000], PNG[16_000:120_000], PNG[120_000:]], True),  # whole, in three pieces
+        ([PNG[:16_000], PNG[16_000:120_000]], False),  # the end never arrived
+        ([PNG_START + b"\1" * (2 * 1024 * 1024)] + [PNG_END], False),  # too big
+    ],
+)
+async def test_a_photo_is_read_to_its_end(hass: HomeAssistant, parts: list[bytes], kept: bool) -> None:
+    from custom_components.delonghi_daedalus.drinks import DrinkList
+
+    drinks = DrinkList(hass, "entry", None, _PiecesSession(parts))  # type: ignore[arg-type]
+    data = await drinks._async_fetch_photo(PHOTO.format(1))
+    assert (data == b"".join(parts)) if kept else data is None

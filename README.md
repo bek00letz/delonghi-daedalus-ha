@@ -92,15 +92,22 @@ The machine reports its status to Home Assistant directly whenever something cha
 
 ### Drinks card
 
-The integration includes a dashboard card. Edit a dashboard, choose **Add card**, and pick **Coffee drinks**, or add it in YAML:
+The integration includes a dashboard card. Edit a dashboard, choose **Add card**, and pick **Coffee drinks**. Its editor lets you:
+
+* **Choose drinks:** turn off *Show all drinks* to pick which ones this card shows and in what order. Each dashboard can have its own list.
+* **Pick a tile size:** Small fits many drinks; Large shows a few big photos, good for a kitchen tablet.
+
+Or in YAML:
 
 ```yaml
 type: custom:delonghi-drinks-card
-# title: Coffee          # optional
+title: Coffee            # optional
+size: medium             # small (default), medium or large
+drinks: [8, 1, 33]       # optional: only these drink numbers, in this order
 # entry_id: …            # only with more than one machine
 ```
 
-Tap a drink to see its photo and description, then **Make**. If the machine is in standby, the card offers to turn it on. Drinks whose button you’ve switched off don’t appear.
+Tap a drink to see its photo and description, then **Make**. If the machine is in standby, the card offers to turn it on. Under the title are **Power** and **Brew profile**; **Settings** opens the rest: coffee temperature, auto-off, water hardness, sound, energy saving and cup warmer. Drinks and settings whose entities you’ve switched off don’t appear.
 
 Upgrading from 0.7 or earlier: the old drink buttons keep their entity IDs, so automations keep working; their names change to the drink names. *Brew coffee* goes away on machines that don’t have that drink.
 

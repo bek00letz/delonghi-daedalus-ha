@@ -25,6 +25,17 @@ from .const import DOMAIN
 CARD_URL_BASE = f"/{DOMAIN}/card"
 CARD_FILE = "delonghi-drinks-card.js"
 CARD_FOLDER = Path(__file__).parent / "frontend"
+# The machine's controls the card shows, by entity key, in the card's order.
+CONTROLS = {
+    "power": "switch",
+    "brew_profile": "select",
+    "coffee_temperature": "select",
+    "auto_off_timer": "select",
+    "water_hardness": "select",
+    "sound": "switch",
+    "energy_saving": "switch",
+    "cup_warmer": "switch",
+}
 
 
 async def async_setup_card(hass: HomeAssistant) -> None:
@@ -79,13 +90,19 @@ def ws_drinks(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
                     "entity_id": entity_id,
                 }
             )
+        controls = {
+            key: entity_id
+            for key, platform in CONTROLS.items()
+            if (entity_id := _entity_id(registry, platform, f"{serial}_{key}"))
+        }
         machines.append(
             {
                 "entry_id": entry.entry_id,
                 "name": coordinator.device_info.get("name"),
                 "status_entity_id": _entity_id(registry, "sensor", f"{serial}_status"),
-                "power_entity_id": _entity_id(registry, "switch", f"{serial}_power"),
+                "power_entity_id": controls.get("power"),
                 "progress_entity_id": _entity_id(registry, "sensor", f"{serial}_brew_progress"),
+                "controls": controls,
                 "drinks": drinks,
             }
         )

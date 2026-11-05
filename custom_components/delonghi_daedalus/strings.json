@@ -215,26 +215,11 @@
       }
     },
     "button": {
-      "brew_coffee_xl": {
-        "name": "Brew coffee XL"
+      "drink": {
+        "name": "Drink {number}"
       },
-      "brew_espresso": {
-        "name": "Brew espresso"
-      },
-      "brew_coffee": {
-        "name": "Brew coffee"
-      },
-      "brew_long": {
-        "name": "Brew long coffee"
-      },
-      "brew_doppio_plus": {
-        "name": "Brew doppio+"
-      },
-      "brew_americano": {
-        "name": "Brew americano"
-      },
-      "brew_hot_water": {
-        "name": "Hot water"
+      "custom_drink": {
+        "name": "Custom drink {number}"
       }
     },
     "select": {

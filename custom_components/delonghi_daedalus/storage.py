@@ -87,6 +87,28 @@ class DaedalusStore:
             self._data["profiles"] = profiles
             self._save()
 
+    @property
+    def drinks(self) -> dict:
+        """The machine's drink list from De'Longhi: {key, fetched, drinks: [...]}."""
+        return dict(self._data.get("drinks", {}))
+
+    @callback
+    def set_drinks(self, value: dict) -> None:
+        if self._data.get("drinks") != value:
+            self._data["drinks"] = value
+            self._save()
+
+    @property
+    def photos(self) -> dict[str, str]:
+        """Drink photos kept on disk: {drink number: the link it came from}."""
+        return dict(self._data.get("photos", {}))
+
+    @callback
+    def set_photos(self, value: dict[str, str]) -> None:
+        if self._data.get("photos") != value:
+            self._data["photos"] = value
+            self._save()
+
     @callback
     def set_token(self, token: str) -> None:
         """Remember a new account token."""

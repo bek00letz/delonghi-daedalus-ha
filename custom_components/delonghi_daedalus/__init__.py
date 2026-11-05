@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -34,6 +35,8 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import DaedalusCoordinator
+from .card import async_setup_card
+from .drinks import async_serve_photos, photos_root
 from .storage import DaedalusStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,6 +53,8 @@ PLATFORMS: list[Platform] = [
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up De'Longhi Daedalus from a config entry."""
     username = entry.data[CONF_USERNAME]
+    await async_serve_photos(hass)
+    await async_setup_card(hass)
     store = DaedalusStore(hass, entry.entry_id)
     await store.async_load()
     _take_handoff(hass, entry, store)
@@ -158,6 +163,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     )
     await client.async_sign_out()
     await store.async_remove()
+    await hass.async_add_executor_job(shutil.rmtree, photos_root(hass) / entry.entry_id, True)
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:

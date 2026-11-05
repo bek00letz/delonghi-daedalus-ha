@@ -1,16 +1,21 @@
 {
   "domain": "delonghi_daedalus",
   "name": "De'Longhi My Coffee Lounge",
+  "after_dependencies": [
+    "frontend"
+  ],
   "codeowners": [
     "@bek00letz"
   ],
   "config_flow": true,
   "dependencies": [
-    "network"
+    "http",
+    "network",
+    "websocket_api"
   ],
   "documentation": "https://github.com/bek00letz/delonghi-daedalus-ha",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/bek00letz/delonghi-daedalus-ha/issues",
   "requirements": [],
-  "version": "0.7.0"
+  "version": "0.8.0"
 }

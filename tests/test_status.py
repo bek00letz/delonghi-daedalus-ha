@@ -121,7 +121,7 @@ async def test_status_report_drives_entities(hass: HomeAssistant, machine: StubL
     assert _state(hass, "sensor", "status").state == "unknown"
     assert _state(hass, "switch", "power").state == "unknown"
     # Unknown state: no drinks until the machine is known to be ready (safety).
-    assert _state(hass, "button", "brew_coffee_xl").state == "unavailable"
+    assert _state(hass, "button", "drink_33").state == "unavailable"
 
     machine.push(_report("Standby", 0, Filter=True))
     await hass.async_block_till_done()
@@ -256,7 +256,7 @@ async def test_brewing_uses_the_active_profile(
     machine.push(_report("Idle", 7))
     await hass.async_block_till_done()
     await hass.services.async_call(
-        "button", "press", {"entity_id": _state(hass, "button", "brew_coffee_xl").entity_id}, blocking=True
+        "button", "press", {"entity_id": _state(hass, "button", "drink_33").entity_id}, blocking=True
     )
     machine.async_brew.assert_awaited_once_with(33, 2, None)
 
@@ -308,7 +308,7 @@ async def test_brew_profile_choice(hass: HomeAssistant, machine: StubLocal, stub
     machine.push(_report("Idle", 7))
     await hass.async_block_till_done()
     await hass.services.async_call(
-        "button", "press", {"entity_id": _state(hass, "button", "brew_espresso").entity_id}, blocking=True
+        "button", "press", {"entity_id": _state(hass, "button", "drink_1").entity_id}, blocking=True
     )
     machine.async_brew.assert_awaited_once_with(1, 3, None)
 

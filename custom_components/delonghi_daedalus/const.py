@@ -83,11 +83,10 @@ STATE_BREWING: Final = "brewing"
 STATE_RINSING: Final = "rinsing"
 STATE_OFFLINE: Final = "offline"
 
-# Recipe numbers, in De'Longhi's ECAM numbering. Confirmed on an ECAM 470.85
-# (2026-11-04): 16 hot water (brewed from the app), 33 Coffee XL. The rest
-# follow the same standard numbering but are not yet confirmed by a brew.
+# Drink numbers, in De'Longhi's ECAM numbering: the same numbers De'Longhi's
+# drink list uses (seen for the ECAM 470.85, 2026-11-05); 8, 16 and 33 also
+# confirmed by a brew. The names stand in until that list has been read.
 RECIPE_ESPRESSO: Final = 1
-RECIPE_COFFEE: Final = 2
 RECIPE_LONG: Final = 3
 RECIPE_DOUBLE_ESPRESSO: Final = 4
 RECIPE_DOPPIO_PLUS: Final = 5
@@ -99,23 +98,22 @@ RECIPE_FLAT_WHITE: Final = 10
 RECIPE_ESPRESSO_MACCHIATO: Final = 11
 RECIPE_HOT_MILK: Final = 12
 RECIPE_HOT_WATER: Final = 16
-RECIPE_SIMPLE_COFFEE: Final = 33  # Coffee XL on the Eletta Ultra
+RECIPE_SIMPLE_COFFEE: Final = 33
 
 RECIPE_NAMES: Final[dict[int, str]] = {
     RECIPE_ESPRESSO: "Espresso",
-    RECIPE_COFFEE: "Coffee",
-    RECIPE_LONG: "Long coffee",
-    RECIPE_DOUBLE_ESPRESSO: "Double espresso",
+    RECIPE_LONG: "Filter Coffee",
+    RECIPE_DOUBLE_ESPRESSO: "2x Espresso",
     RECIPE_DOPPIO_PLUS: "Doppio+",
     RECIPE_AMERICANO: "Americano",
     RECIPE_CAPPUCCINO: "Cappuccino",
-    RECIPE_LATTE_MACCHIATO: "Latte macchiato",
+    RECIPE_LATTE_MACCHIATO: "Latte Macchiato",
     RECIPE_CAFFELATTE: "Caffelatte",
-    RECIPE_FLAT_WHITE: "Flat white",
-    RECIPE_ESPRESSO_MACCHIATO: "Espresso macchiato",
-    RECIPE_HOT_MILK: "Hot milk",
-    RECIPE_HOT_WATER: "Hot water",
-    RECIPE_SIMPLE_COFFEE: "Coffee XL",
+    RECIPE_FLAT_WHITE: "Flat White",
+    RECIPE_ESPRESSO_MACCHIATO: "Espresso Macchiato",
+    RECIPE_HOT_MILK: "Hot Milk",
+    RECIPE_HOT_WATER: "Hot Water",
+    RECIPE_SIMPLE_COFFEE: "Coffee",
 }
 
 DEFAULT_PROFILE_ID: Final = 1

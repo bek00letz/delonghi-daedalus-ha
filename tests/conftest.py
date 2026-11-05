@@ -47,3 +47,28 @@ def stub_cloud():
         "custom_components.delonghi_daedalus.coordinator.DaedalusCloudConnection", StubCloud
     ):
         yield StubCloud
+
+
+class StubContent:
+    """Stands in for De'Longhi's content server: tests set ``drinks`` (or leave it offline)."""
+
+    drinks: list | None = None
+    calls: int = 0
+
+    @classmethod
+    async def fetch(cls, session, token, machine, language, country):
+        from custom_components.delonghi_daedalus.api.client import DaedalusConnectionError
+
+        cls.calls += 1
+        if cls.drinks is None:
+            raise DaedalusConnectionError("offline in tests")
+        return list(cls.drinks)
+
+
+@pytest.fixture(autouse=True)
+def stub_content():
+    """No test reaches De'Longhi's content server."""
+    StubContent.drinks = None
+    StubContent.calls = 0
+    with patch("custom_components.delonghi_daedalus.drinks.async_fetch_drinks", StubContent.fetch):
+        yield StubContent

@@ -17,7 +17,8 @@ Built with low-latency local control, instant state synchronization, and zero cl
 * **Dual-Plane Architecture** — Automatic cloud discovery and pairing via SAP Gigya SSO and AWS IoT with seamless fallback to local network execution.
 * **Standby & Power Toggle** — Reliable remote wake and standby power switching.
 * **Extraction Telemetry** — Real-time dispensing feedback tracking coffee volume, aroma strength, pre-infusion stages, and grind dosage.
-* **Quick Brew Triggers** — Single-tap action buttons for your favorite recipes (Espresso, Coffee XL, Americano, Doppio+, Long, and Hot Water).
+* **Every drink your machine makes** — One button per drink, named as in the app and with its photo, read from De’Longhi’s drink list for your model and firmware.
+* **Drinks card** — A dashboard card with your drinks as photo tiles and filters, included with the integration.
 * **Settings & Diagnostics** — Read extraction temperature, auto-off timers, and connectivity diagnostics.
 
 ---
@@ -85,9 +86,23 @@ If your router later gives the machine a new address, Home Assistant finds it ag
 | **Binary sensor** | Water tank empty, Water tank missing, Grounds container full, Out of coffee beans, Descaling needed, Water filter, Brew unit cleaning, Cleaning needed, General fault | Alarms the machine reports. On means it needs attention. |
 | **Binary sensor** | 12 technical faults (grinder, heater sensor, fan, …) | Created but switched off. Turn them on under the device’s entities if you want them. |
 | **Binary sensor** | Home network connection, Cloud connection | Whether Home Assistant is connected to the machine directly and through De’Longhi’s cloud |
-| **Button** | Brew coffee XL, espresso, coffee, long coffee, doppio+, americano; Hot water | One-tap drinks. **Not yet tested.** Hot water and Coffee XL use confirmed recipe numbers; the others follow De’Longhi’s standard numbering. |
+| **Button** | One per drink (Espresso, Latte Macchiato, Iced Americano, Cold Brew, …) | Makes that drink. Names and photos come from De’Longhi’s drink list for your machine. Mug versions and custom slots are created but switched off. Until the list has been read once, a few common drinks stand in. **Brewing from Home Assistant isn’t tested yet**; the drink numbers come from De’Longhi’s own list. |
 
 The machine reports its status to Home Assistant directly whenever something changes, and Home Assistant also follows the copy the machine keeps in De’Longhi’s cloud, so status, settings and maintenance levels stay current even when you use the app.
+
+### Drinks card
+
+The integration includes a dashboard card. Edit a dashboard, choose **Add card**, and pick **Coffee drinks**, or add it in YAML:
+
+```yaml
+type: custom:delonghi-drinks-card
+# title: Coffee          # optional
+# entry_id: …            # only with more than one machine
+```
+
+Tap a drink to see its photo and description, then **Make**. If the machine is in standby, the card offers to turn it on. Drinks whose button you’ve switched off don’t appear.
+
+Upgrading from 0.7 or earlier: the old drink buttons keep their entity IDs, so automations keep working; their names change to the drink names. *Brew coffee* goes away on machines that don’t have that drink.
 
 ---
 
@@ -109,6 +124,7 @@ Control over your home network keeps working when the internet or De’Longhi’
 * **Your password isn’t stored.** It’s used once to sign in; Home Assistant keeps the De’Longhi sign-in session instead, in its private storage, and signs it out when you remove the integration. When De’Longhi ends the session, Home Assistant asks you to sign in again.
 * If De’Longhi refuses the sign-in, Home Assistant stops and asks you to sign in again instead of retrying, so it can’t lock your account.
 * **Brewing is guarded:** Home Assistant only starts a drink when the machine is on and ready, isn’t busy, and has no water tank, grounds or beans alert. Don’t expose the brew buttons or the power switch to voice assistants or to automations you haven’t thought through: they control a machine with hot water.
+* **Drink list and photos:** about once a week Home Assistant asks De’Longhi’s content server for your machine’s drinks, sending the model, model code, firmware versions and your Home Assistant language and country. Each drink photo is downloaded once from De’Longhi’s image server and kept in Home Assistant’s cache folder; your browser loads it from Home Assistant, never from De’Longhi. The photos are De’Longhi’s and aren’t part of this repository.
 * No analytics or tracking. Nothing is sent anywhere except De’Longhi’s own services and your machine. Logs leave out your machine’s serial number and addresses.
 
 ---

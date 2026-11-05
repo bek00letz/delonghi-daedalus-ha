@@ -8,7 +8,6 @@ import time
 from typing import Any
 
 from ..const import (
-    RECIPE_NAMES,
     STATE_READY,
     STATE_STANDBY,
 )
@@ -72,11 +71,6 @@ class BeverageReport:
     infusion_index: int | None = None
     rinse: int | None = None
     timestamp: float = field(default_factory=time.time)
-
-    @property
-    def recipe_name(self) -> str:
-        """Return friendly drink name."""
-        return RECIPE_NAMES.get(self.recipe_id, f"Recipe {self.recipe_id}")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BeverageReport:

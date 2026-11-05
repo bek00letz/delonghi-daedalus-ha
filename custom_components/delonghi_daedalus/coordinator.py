@@ -34,8 +34,10 @@ from .api.models import (
     MachineStatus,
 )
 from .api.cloud import DaedalusCloudConnection
+from .api.content import MachineIdentity
 from .api.discovery import async_find_machine
 from .api.websocket import DaedalusCommandError, DaedalusLocalWebSocket
+from .drinks import DrinkList
 from .local_network import async_find_local_machine
 from .storage import DaedalusStore
 
@@ -114,6 +116,13 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         self.known_profiles: set[int] = set(store.profiles) if store else set()
         if store and (cached := MachineCapabilities.from_report(store.capabilities)):
             self.state.capabilities = cached
+        # The drinks this machine offers, with names and photos from De'Longhi.
+        self.drinks = DrinkList(
+            hass,
+            config_entry.entry_id,
+            store,
+            aiohttp_client.async_get_clientsession(hass),
+        )
         # Follows the machine's status, settings and capabilities through the
         # cloud, live, whenever the internet is available.
         self._cloud = DaedalusCloudConnection(
@@ -172,6 +181,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         """Start local WebSocket listener and initial coordinator refresh."""
         # Check the cloud sign-in first: if it fails, setup stops before any
         # local connection is opened, so nothing is left running.
+        await self.drinks.async_load_photos()
         await self.async_config_entry_first_refresh()
         if self._local_ws:
             await self._local_ws.async_start()
@@ -180,6 +190,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
     async def async_stop(self) -> None:
         """Stop local WebSocket and release network resources."""
         await self._cloud.async_stop()
+        await self.drinks.async_stop()
         if self.store:
             # Don't leave a change (a new token, a filter date) in the delayed write.
             await self.store.async_save_now()
@@ -220,7 +231,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             report = BeverageReport.from_dict(data)
             self.state.last_drink = report
             self.state.operational_state = STATE_READY
-            _LOGGER.info("Beverage brewed: %s (Recipe %s)", report.recipe_name, report.recipe_id)
+            _LOGGER.info("Drink made: %s (number %s)", self.drinks.name(report.recipe_id), report.recipe_id)
             self.async_set_updated_data(self.state)
 
         # 3. Settings configuration response
@@ -251,6 +262,8 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             raise ConfigEntryAuthFailed(f"De'Longhi no longer accepts the saved sign-in: {err}") from err
         except (DaedalusConnectionError, DaedalusApiError) as err:
             _LOGGER.debug("Cloud poll failed (continuing with local state): %s", err)
+        else:
+            self._maybe_refresh_drinks()
 
         if self._local_ws:
             self.state.is_local_connected = self._local_ws.is_connected
@@ -275,9 +288,31 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
             if self.store:
                 self.store.set_capabilities(reported)
             self._update_device_registry()
+            self._maybe_refresh_drinks()
         else:
             return
         self.async_set_updated_data(self.state)
+
+    @property
+    def machine_identity(self) -> MachineIdentity:
+        """Model, SKU and firmware, as De'Longhi's content server asks for them."""
+        caps = self.state.capabilities
+        return MachineIdentity(
+            model=self.appliance.model,
+            sku=(caps.sku if caps and caps.sku else self.appliance.sku),
+            firmware_ui=(caps.firmware_ui if caps else None) or "",
+            firmware_wifi=(caps.firmware_wifi if caps else None) or "",
+            firmware_mainboard=(caps.firmware_mainboard if caps else None) or "",
+        )
+
+    @callback
+    def _maybe_refresh_drinks(self) -> None:
+        self.drinks.maybe_refresh(
+            self.machine_identity,
+            self.cloud_client.async_get_token,
+            self.hass.config.language,
+            self.hass.config.country,
+        )
 
     @callback
     def _cloud_connected(self, connected: bool) -> None:

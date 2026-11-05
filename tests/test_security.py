@@ -86,7 +86,7 @@ async def test_a_refused_sign_in_while_running_asks_once_and_stops(hass: HomeAss
 )
 async def test_no_drink_unless_ready_and_clear(hass: HomeAssistant, setup, report) -> None:
     _, machine = setup
-    button = _entity(hass, "button", "brew_hot_water")
+    button = _entity(hass, "button", "drink_16")
     machine.push(_report("Idle"))  # ready and clear: drinks allowed
     await hass.async_block_till_done()
     assert hass.states.get(button).state != "unavailable"
@@ -102,7 +102,7 @@ async def test_a_press_is_rechecked_at_the_moment_it_happens(hass: HomeAssistant
     await hass.async_block_till_done()
     coordinator = hass.data[DOMAIN][entry.entry_id]
     button = next(
-        e for e in hass.data["entity_components"]["button"].entities if e.entity_id == _entity(hass, "button", "brew_hot_water")
+        e for e in hass.data["entity_components"]["button"].entities if e.entity_id == _entity(hass, "button", "drink_16")
     )
     machine.push(_report("Busy"))  # became busy without the button being redrawn yet
     with pytest.raises(HomeAssistantError) as err:

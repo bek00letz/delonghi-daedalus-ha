@@ -163,7 +163,12 @@ class DaedalusLastDrinkSensor(DaedalusEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         drink = self.coordinator.data.last_drink
-        return drink.recipe_name if drink else None
+        return self.coordinator.drinks.name(drink.recipe_id) if drink else None
+
+    @property
+    def entity_picture(self) -> str | None:
+        drink = self.coordinator.data.last_drink
+        return self.coordinator.drinks.photo(drink.recipe_id) if drink else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

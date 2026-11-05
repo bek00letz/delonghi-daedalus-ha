@@ -39,7 +39,8 @@ ADJUSTABLE: dict[str, tuple[str, str]] = {
     "Water": ("Coffee", "ml"),
     "WaterQty2": ("Water", "ml"),
     "MilkQty": ("Milk", "milk"),
-    "MilkFoam": ("Foam", "scale"),
+    # Not "MilkFoam": foam is set with the dial on the milk carafe's lid, not
+    # by the machine; the value is still sent as the machine reports it.
     "TeaTemp": ("Temperature", "scale"),
     "NumIceCubes": ("Ice cubes", "count"),
     "IdMugAdjust": ("Mug size", "scale"),

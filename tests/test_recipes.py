@@ -68,7 +68,7 @@ def test_unset_custom_slot_values_arent_sent() -> None:
 
 def test_the_sheet_offers_only_what_can_change() -> None:
     latte = {c["key"]: c for c in recipes.controls(DRINKS[8], {"Aroma": 3, "MilkQty": 219}, {})}
-    assert list(latte) == ["Aroma", "Water", "MilkQty"]  # foam is fixed for this drink
+    assert list(latte) == ["Aroma", "Water", "MilkQty"]  # no foam: that's the carafe's dial
     assert latte["Aroma"]["usual"] == 3 and latte["Aroma"]["value"] == 3
     # Milk in the machine's units, with De'Longhi's own ml figure: 2 "units" ≈ 150 ml.
     assert round(latte["MilkQty"]["usual"] * latte["MilkQty"]["ml_per_unit"]) == 150
@@ -144,3 +144,10 @@ async def test_the_card_gets_each_drinks_controls(hass: HomeAssistant, running, 
     assert [c["key"] for c in drinks[1]["controls"]] == ["Aroma", "Water", "Double"]
     assert drinks[16]["controls"][0]["label"] == "Water"
     assert json.dumps(drinks)  # all plain data
+
+
+def test_foam_is_sent_as_the_machine_has_it_but_not_offered() -> None:
+    """Foam is set with the dial on the milk carafe; the machine's value is passed on untouched."""
+    hot_milk = Drink(12, "Hot Milk", frozenset({"HOT", "MILK"}), values={"MilkQty": (63, 447, 1118), "MilkFoam": (0, 2, 2)})
+    assert all(c["key"] != "MilkFoam" for c in recipes.controls(hot_milk, {}, {}))
+    assert recipes.recipe(hot_milk, {"MilkFoam": 1}, {"MilkFoam": 0})["MilkFoam"] == 1  # a saved change is ignored

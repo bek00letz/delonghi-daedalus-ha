@@ -754,7 +754,14 @@ class DelonghiDrinksCard extends HTMLElement {
     turnOn.hidden = !(blocker && blocker.turnOn);
     if (this._note && this._note.clearWhenReady && !blocker) this._note = null;
     note.classList.toggle("error", Boolean(this._note && this._note.error));
-    note.textContent = this._note ? this._note.text : blocker ? blocker.text : "Put a cup under the spout first.";
+    note.textContent = this._note ? this._note.text : blocker ? blocker.text : this._readyHint(drink);
+  }
+
+  /** What to do before making the drink. */
+  _readyHint(drink) {
+    return (drink.groups || []).includes("milk")
+      ? "Put a cup under the spout and attach the milk carafe. Its dial sets the foam."
+      : "Put a cup under the spout first.";
   }
 
   async _make(drink) {

@@ -109,6 +109,36 @@ class DaedalusStore:
             self._data["photos"] = value
             self._save()
 
+    @property
+    def personal(self) -> dict[str, dict[str, int]]:
+        """Changes saved in Home Assistant per drink: {drink number: {value name: value}}."""
+        return {k: dict(v) for k, v in self._data.get("personal", {}).items()}
+
+    @callback
+    def set_personal(self, drink_id: int, values: dict[str, int] | None) -> None:
+        personal = dict(self._data.get("personal", {}))
+        if values:
+            personal[str(drink_id)] = dict(values)
+        else:
+            personal.pop(str(drink_id), None)
+        if self._data.get("personal") != personal:
+            self._data["personal"] = personal
+            self._save()
+
+    @property
+    def reported(self) -> dict[str, dict[str, int]]:
+        """How the machine last made each drink: {"profile:drink": {value name: value}}."""
+        return {k: dict(v) for k, v in self._data.get("reported", {}).items()}
+
+    @callback
+    def set_reported(self, profile_id: int, drink_id: int, values: dict[str, int]) -> None:
+        reported = dict(self._data.get("reported", {}))
+        key = f"{profile_id}:{drink_id}"
+        if reported.get(key) != values:
+            reported[key] = dict(values)
+            self._data["reported"] = reported
+            self._save()
+
     def has_done(self, task: str) -> bool:
         """Whether a one-time repair has already run for this machine."""
         return task in self._data.get("done", [])

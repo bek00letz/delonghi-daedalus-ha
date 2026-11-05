@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 import json
 import logging
 import random
@@ -27,7 +27,6 @@ from ..const import (
     TURN_ON_OFF_STANDBY,
     TURN_ON_OFF_WAKE,
 )
-from .models import BeverageParameters
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +54,10 @@ class DaedalusCommandError(Exception):
     def __init__(self, reason: str, detail: str = "") -> None:
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
+
+
+# Message fields a drink's values may never override.
+RESERVED_FIELDS = frozenset({"Message", "AppId", "RequestId", "RecipeId", "ProfileId", "ConnectionId"})
 
 
 def generate_request_id(length: int = 5) -> str:
@@ -359,20 +362,19 @@ class DaedalusLocalWebSocket:
     async def async_brew(
         self,
         recipe_id: int,
-        profile_id: int = 1,
-        parameters: BeverageParameters | None = None,
+        profile_id: int,
+        values: Mapping[str, int],
     ) -> dict[str, Any]:
-        """Dispatch drink brewing request with customized parameters."""
+        """Ask for a drink. The machine wants the drink's values at the top level
+        and ignores a request without them (seen 2026-11-05)."""
         payload: dict[str, Any] = {
+            **{name: value for name, value in values.items() if name not in RESERVED_FIELDS},
             "Message": MESSAGE_BEVERAGE_REQUEST,
             "AppId": APP_ID_MCL,
             "RequestId": generate_request_id(),
             "RecipeId": recipe_id,
             "ProfileId": profile_id,
         }
-        if parameters:
-            payload["Parameters"] = parameters.to_dict()
-
         return await self.async_send_command(payload)
 
     async def async_set_settings(self, fields: dict[str, Any]) -> dict[str, Any]:

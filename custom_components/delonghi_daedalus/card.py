@@ -53,6 +53,7 @@ async def async_setup_card(hass: HomeAssistant) -> None:
     if "frontend" in hass.config.components:
         frontend.add_extra_js_url(hass, f"{CARD_URL_BASE}/{CARD_FILE}?v={version}")
     websocket_api.async_register_command(hass, ws_drinks)
+    websocket_api.async_register_command(hass, ws_drink_settings)
 
 
 def _integration_version() -> str:
@@ -76,6 +77,7 @@ def ws_drinks(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
             continue
         serial = coordinator.appliance.serial_number
         drinks = []
+        profile = coordinator.active_profile
         for drink in coordinator.drinks.drinks:
             entity_id = _entity_id(registry, "button", f"{serial}_drink_{drink.id}")
             if entity_id is None:
@@ -88,6 +90,7 @@ def ws_drinks(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
                     "description": drink.description,
                     "photo": coordinator.drinks.photo(drink.id),
                     "entity_id": entity_id,
+                    "controls": coordinator.drinks.controls(drink.id, profile),
                 }
             )
         controls = {
@@ -107,3 +110,25 @@ def ws_drinks(hass: HomeAssistant, connection: websocket_api.ActiveConnection, m
             }
         )
     connection.send_result(msg["id"], {"machines": machines})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/drink_settings",
+        vol.Required("entry_id"): str,
+        vol.Required("drink_id"): int,
+        # The drink's changed values, or null to go back to how the machine makes it.
+        vol.Required("values"): vol.Any(None, {str: vol.Any(int, float, bool)}),
+    }
+)
+@callback
+def ws_drink_settings(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Save a drink's changes; answers with the drink's controls as they now are."""
+    coordinator = hass.data.get(DOMAIN, {}).get(msg["entry_id"])
+    if coordinator is None or coordinator.drinks.get(msg["drink_id"]) is None:
+        connection.send_error(msg["id"], "not_found", "That drink isn't on this machine.")
+        return
+    coordinator.drinks.set_personal(msg["drink_id"], msg["values"])
+    connection.send_result(
+        msg["id"], {"controls": coordinator.drinks.controls(msg["drink_id"], coordinator.active_profile)}
+    )

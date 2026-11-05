@@ -33,31 +33,6 @@ class DaedalusAppliance:
 
 
 @dataclass
-class BeverageParameters:
-    """Parameters passed to BeverageRequest."""
-
-    recipe_id: int
-    profile_id: int = 1
-    water: int | None = None
-    aroma: int | None = None
-    milk: int | None = None
-    temperature: int | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert non-null parameters to wire dict format."""
-        params: dict[str, Any] = {}
-        if self.water is not None:
-            params["Water"] = self.water
-        if self.aroma is not None:
-            params["Aroma"] = self.aroma
-        if self.milk is not None:
-            params["Milk"] = self.milk
-        if self.temperature is not None:
-            params["Temperature"] = self.temperature
-        return params
-
-
-@dataclass
 class BeverageReport:
     """Telemetry report emitted after dispensing a beverage."""
 

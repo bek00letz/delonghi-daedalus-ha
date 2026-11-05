@@ -198,6 +198,20 @@ const STYLE = `
            backdrop-filter: none; -webkit-backdrop-filter: none; }
   .close::before { content: ""; position: absolute; inset: -6px; }
   .close ha-icon { --mdc-icon-size: 18px; }
+  dialog.adjust .close { top: 14px; right: 14px; background: var(--dl-fill); color: var(--dl-text);
+           backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .intro { display: grid; grid-template-columns: 88px 1fr; gap: 14px; align-items: center; margin-right: 40px; }
+  .intro .photo { border-radius: 10px; }
+  .intro h3 { margin: 0; }
+  .intro p { margin: 4px 0 0; font-size: 14px; line-height: 19px; display: -webkit-box; -webkit-line-clamp: 3;
+             -webkit-box-orient: vertical; overflow: hidden; }
+  .adjust .rows { margin-top: 16px; }
+  .adjust .row { flex-wrap: wrap; padding: 6px 12px; }
+  .adjust .row .value { font-size: 16px; color: var(--dl-text-2); font-variant-numeric: tabular-nums; }
+  .adjust .row input[type="range"] { flex: 1 0 100%; height: 32px; margin: 0 0 4px; accent-color: var(--dl-accent); cursor: pointer; }
+  .reset { display: block; min-height: 44px; margin: 4px auto 0; padding: 0 12px; border: none; background: none;
+           color: var(--dl-accent); font-size: 15px; font-weight: 500; cursor: pointer; }
+  .reset[hidden] { display: none; }
   @media (prefers-reduced-motion: reduce) { dialog[open], dialog::backdrop { animation: none !important; } }
 `;
 
@@ -573,22 +587,106 @@ class DelonghiDrinksCard extends HTMLElement {
     this._sheet = { kind: "drink", drink };
     this._busy = false;
     this._note = null;
-    dialog.className = "";
+    this._saving = null;
+    const controls = drink.controls || [];
+    dialog.className = controls.length ? "adjust" : "";
     const title = element("h3", { id: "sheet-title", text: drink.name });
     dialog.setAttribute("aria-labelledby", "sheet-title");
     const make = element("button", { class: "primary", onclick: () => this._make(drink) });
     const turnOn = element("button", { class: "secondary", text: "Turn on", onclick: () => this._turnOn() });
+    const description = drink.description ? element("p", { text: drink.description }) : null;
     dialog.replaceChildren(
-      this._photo(drink, true),
-      this._closeButton(dialog),
-      title,
-      drink.description ? element("p", { text: drink.description }) : null,
+      ...(controls.length
+        ? [element("div", { class: "intro" }, this._photo(drink, true), element("div", {}, title, description)),
+           this._closeButton(dialog), this._adjustments(drink)]
+        : [this._photo(drink, true), this._closeButton(dialog), title, description]),
       element("div", { class: "actions" }, make, turnOn),
       element("div", { class: "note", role: "status" })
     );
     this._updateDrinkSheet();
     dialog.showModal();
     make.focus();
+  }
+
+  /* ---- a drink's own values: strength, amounts, milk… ---- */
+
+  _valueText(control, value) {
+    switch (control.kind) {
+      case "ml":
+        return `${value} ml`;
+      case "milk":
+        return `about ${Math.round((value * control.ml_per_unit) / 5) * 5} ml`;
+      case "count":
+        return String(value);
+      case "switch":
+        return "";
+      default:
+        // The machine's (and the app's) own numbers: strength 3 is "3".
+        return `${value} of ${control.max}`;
+    }
+  }
+
+  _adjustments(drink) {
+    const wrap = element("div", {});
+    const rows = element("div", { class: "rows" });
+    const reset = element("button", {
+      class: "reset", text: "Use the machine’s settings",
+      onclick: () => this._saveDrink(drink, null),
+    });
+    for (const control of drink.controls) {
+      const id = `adjust-${control.key}`;
+      const label = element("label", { for: id, text: control.label });
+      if (control.kind === "switch") {
+        const toggle = element("button", {
+          class: "toggle", role: "switch", id, "aria-label": control.label,
+          "aria-checked": String(control.value === control.max),
+          onclick: () => {
+            haptic("light");
+            const on = toggle.getAttribute("aria-checked") !== "true";
+            toggle.setAttribute("aria-checked", String(on));
+            this._saveDrink(drink, { [control.key]: on ? control.max : control.min });
+          },
+        });
+        rows.append(element("div", { class: "row" }, label, toggle));
+        continue;
+      }
+      const value = element("span", { class: "value", text: this._valueText(control, control.value) });
+      const slider = element("input", {
+        type: "range", id, min: control.min, max: control.max, step: control.step, value: control.value,
+        oninput: () => (value.textContent = this._valueText(control, Number(slider.value))),
+        onchange: () => {
+          haptic("selection");
+          this._saveDrink(drink, { [control.key]: Number(slider.value) });
+        },
+      });
+      slider.setAttribute("aria-valuetext", this._valueText(control, control.value));
+      rows.append(element("div", { class: "row" }, label, value, slider));
+    }
+    reset.hidden = !drink.controls.some((c) => c.value !== c.usual);
+    wrap.append(rows, reset);
+    return wrap;
+  }
+
+  /** Save one change (or null: back to the machine's own settings); the next drink uses it. */
+  _saveDrink(drink, change) {
+    const changed = {};
+    for (const c of drink.controls) if (c.value !== c.usual) changed[c.key] = c.value;
+    const values = change === null ? null : { ...changed, ...change };
+    this._saving = this._hass
+      .callWS({ type: "delonghi_daedalus/drink_settings", entry_id: this._machine.entry_id, drink_id: drink.id, values })
+      .then(({ controls }) => {
+        drink.controls = controls;
+        if (this._sheet && this._sheet.drink === drink) {
+          const dialog = this._root.querySelector("dialog");
+          const fresh = this._adjustments(drink);
+          const old = dialog.querySelector(".rows").parentElement;
+          const focused = this._root.activeElement && this._root.activeElement.id;
+          old.replaceWith(fresh);
+          if (focused) this._root.getElementById(focused)?.focus();
+        }
+      })
+      .catch((err) => this._setNote((err && err.message) || "Couldn’t save that change. Try again.", true));
+    return this._saving;
   }
 
   _openSettings() {
@@ -662,6 +760,7 @@ class DelonghiDrinksCard extends HTMLElement {
   async _make(drink) {
     if (this._busy) return;
     this._busy = true;
+    if (this._saving) await this._saving; // the drink uses the change just made
     const make = this._root.querySelector("dialog .primary");
     make.textContent = "Starting…";
     this._setNote("Starting…");

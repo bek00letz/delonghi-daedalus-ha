@@ -26,6 +26,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from .api.client import DaedalusApiError, DaedalusAuthError, DaedalusConnectionError
 from .api.content import DaedalusContentError, Drink, MachineIdentity, async_fetch_drinks
+from . import recipes
 from .const import (
     DOMAIN,
     RECIPE_AMERICANO,
@@ -42,6 +43,7 @@ from .storage import DaedalusStore
 _LOGGER = logging.getLogger(__name__)
 
 PHOTO_URL_BASE = f"/{DOMAIN}/drinks"
+LIST_FORMAT = "2"  # 2: each drink's values (0.10)
 REFRESH_EVERY = 7 * 24 * 3600  # look for new drinks or new names weekly
 RETRY_AFTER = 3600  # after a failed attempt
 MAX_PHOTO_BYTES = 2 * 1024 * 1024
@@ -191,7 +193,8 @@ class DrinkList:
         """Fetch the list in the background when it's missing, out of date or for other firmware."""
         if not machine.complete or (self._task and not self._task.done()):
             return
-        key = [machine.model, machine.sku, machine.firmware_ui, machine.firmware_wifi,
+        # LIST_FORMAT changes when more is read from the list, so saved lists are read again.
+        key = [LIST_FORMAT, machine.model, machine.sku, machine.firmware_ui, machine.firmware_wifi,
                machine.firmware_mainboard, language or "", country or ""]
         saved = self._store.drinks if self._store else {}
         now = time.time()
@@ -270,6 +273,38 @@ class DrinkList:
         partial = target.with_suffix(".part")
         partial.write_bytes(data)
         partial.replace(target)
+
+    # ---- recipes ----
+
+    def recipe(self, drink_id: int, profile_id: int) -> dict[str, int]:
+        """The values to send for this drink with this profile (see recipes.py)."""
+        return recipes.recipe(self._drinks.get(drink_id), self._reported(profile_id, drink_id), self._personal(drink_id))
+
+    def controls(self, drink_id: int, profile_id: int) -> list[dict]:
+        """What the card's sheet can change for this drink."""
+        return recipes.controls(self._drinks.get(drink_id), self._reported(profile_id, drink_id), self._personal(drink_id))
+
+    @callback
+    def set_personal(self, drink_id: int, changes: dict | None) -> None:
+        """Save changes for a drink (None or empty: back to how the machine makes it)."""
+        if self._store is None:
+            return
+        cleaned = recipes.clean_personal(self._drinks.get(drink_id), changes or {})
+        self._store.set_personal(drink_id, cleaned or None)
+        self._notify()
+
+    @callback
+    def record_report(self, profile_id: int, drink_id: int, report: dict) -> None:
+        """Remember how the machine made a drink, from its report."""
+        values = recipes.machine_values(report)
+        if self._store is not None and values:
+            self._store.set_reported(profile_id, drink_id, values)
+
+    def _reported(self, profile_id: int, drink_id: int) -> dict[str, int]:
+        return (self._store.reported if self._store else {}).get(f"{profile_id}:{drink_id}", {})
+
+    def _personal(self, drink_id: int) -> dict[str, int]:
+        return (self._store.personal if self._store else {}).get(str(drink_id), {})
 
     async def async_stop(self) -> None:
         if self._task and not self._task.done():

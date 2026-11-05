@@ -25,7 +25,6 @@ from .api.client import (
 )
 from .api.models import (
     STATUS_BUSY,
-    BeverageParameters,
     BeverageReport,
     DaedalusAppliance,
     MachineCapabilities,
@@ -230,6 +229,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         elif msg_type == RESPONSE_BEVERAGE_REPORT:
             report = BeverageReport.from_dict(data)
             self.state.last_drink = report
+            self.drinks.record_report(report.profile_id, report.recipe_id, data)
             self.state.operational_state = STATE_READY
             _LOGGER.info("Drink made: %s (number %s)", self.drinks.name(report.recipe_id), report.recipe_id)
             self.async_set_updated_data(self.state)
@@ -506,15 +506,12 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         """
         return self.brew_profile or self.machine_profile or 1
 
-    async def async_brew(
-        self,
-        recipe_id: int,
-        profile_id: int | None = None,
-        parameters: BeverageParameters | None = None,
-    ) -> None:
-        """Start brewing a drink, with the machine's active profile unless told otherwise."""
+    async def async_brew(self, recipe_id: int, profile_id: int | None = None) -> None:
+        """Make a drink: its values as the machine makes it for this profile, with
+        any changes saved in Home Assistant (see recipes.py)."""
         profile = profile_id or self.active_profile
-        await self._async_command(lambda ws: ws.async_brew(recipe_id, profile, parameters))
+        values = self.drinks.recipe(recipe_id, profile)
+        await self._async_command(lambda ws: ws.async_brew(recipe_id, profile, values))
         self.state.operational_state = STATE_BREWING
         self.async_set_updated_data(self.state)
 

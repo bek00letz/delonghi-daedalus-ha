@@ -44,6 +44,8 @@ class Drink:
     groups: frozenset[str] = field(default_factory=frozenset)
     photo_url: str | None = None
     description: str | None = None
+    # The drink's values as De'Longhi lists them: {name: (lowest, default, highest)}.
+    values: dict[str, tuple[int, int, int]] = field(default_factory=dict, compare=False)
 
     @property
     def is_custom(self) -> bool:
@@ -65,6 +67,7 @@ class Drink:
             "groups": sorted(self.groups),
             "photo_url": self.photo_url,
             "description": self.description,
+            "values": {name: list(limits) for name, limits in self.values.items()},
         }
 
     @classmethod
@@ -76,6 +79,7 @@ class Drink:
                 groups=_groups(data.get("groups", [])),  # also repairs lists saved by 0.8.0
                 photo_url=data.get("photo_url") if isinstance(data.get("photo_url"), str) else None,
                 description=data.get("description") if isinstance(data.get("description"), str) else None,
+                values=_values(data.get("values")),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -112,6 +116,34 @@ def _groups(value: Any) -> frozenset[str]:
     )
 
 
+def _values(raw: Any) -> dict[str, tuple[int, int, int]]:
+    """{name: (lowest, default, highest)} from a saved list; anything odd is dropped."""
+    if not isinstance(raw, dict):
+        return {}
+    values: dict[str, tuple[int, int, int]] = {}
+    for name, limits in raw.items():
+        try:
+            low, default, high = (int(x) for x in limits)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(name, str):
+            values[name] = (low, default, high)
+    return values
+
+
+def _ingredients(raw: Any) -> dict[str, tuple[int, int, int]]:
+    """A drink's ingredients as De'Longhi lists them: [{name, minval, defval, maxval}, …]."""
+    values: dict[str, tuple[int, int, int]] = {}
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            continue
+        try:
+            values[item["name"]] = (int(item.get("minval")), int(item.get("defval")), int(item.get("maxval")))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 def parse_drinks(data: Any) -> list[Drink]:
     """The drink list from a ``basicrecipe/retrieve`` answer; odd entries are skipped."""
     entries = data.get("entries") if isinstance(data, dict) else None
@@ -132,7 +164,10 @@ def parse_drinks(data: Any) -> list[Drink]:
         if not isinstance(name, str) or not name.strip():
             original = drink.get("original_title") or item.get("title")
             name = _readable(original) if isinstance(original, str) and "CUSTOM" not in groups else None
-        drinks.setdefault(drink_id, Drink(drink_id, name.strip() if name else None, groups))
+        drinks.setdefault(
+            drink_id,
+            Drink(drink_id, name.strip() if name else None, groups, values=_ingredients(drink.get("ingredients"))),
+        )
     return sorted(drinks.values(), key=lambda d: d.id)
 
 
@@ -245,6 +280,6 @@ async def async_fetch_drinks(
         photos = {}
 
     return [
-        Drink(d.id, d.name, d.groups, *photos.get(d.id, (None, None)))
+        Drink(d.id, d.name, d.groups, *photos.get(d.id, (None, None)), values=d.values)
         for d in drinks
     ]

@@ -258,7 +258,7 @@ async def test_brewing_uses_the_active_profile(
     await hass.services.async_call(
         "button", "press", {"entity_id": _state(hass, "button", "drink_33").entity_id}, blocking=True
     )
-    machine.async_brew.assert_awaited_once_with(33, 2, None)
+    machine.async_brew.assert_awaited_once_with(33, 2, {})
 
 
 
@@ -310,7 +310,7 @@ async def test_brew_profile_choice(hass: HomeAssistant, machine: StubLocal, stub
     await hass.services.async_call(
         "button", "press", {"entity_id": _state(hass, "button", "drink_1").entity_id}, blocking=True
     )
-    machine.async_brew.assert_awaited_once_with(1, 3, None)
+    machine.async_brew.assert_awaited_once_with(1, 3, {})
 
 
 def _filter_record(count: int, usage: int) -> dict:

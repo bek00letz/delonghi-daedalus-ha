@@ -3,7 +3,7 @@
 [![HACS Custom Repository](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=flat-square)](https://github.com/hacs/default)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
-> **Status: early, in active development.** On an Eletta Ultra (ECAM 470.85): sign-in, power control over your home network (also without internet), finding the machine automatically, live status and alarms, and settings work. **Brewing from Home Assistant is not tested yet.** EU accounts only for now; [US owners can help](#help-wanted-us-accounts). Built on [sk7n4k3d’s original work](#credits).
+> **Status: early, in active development.** On an Eletta Ultra (ECAM 470.85): sign-in, power control over your home network (also without internet), finding the machine automatically, live status and alarms, and settings work. **Brewing from Home Assistant works for hot water and espresso; milk drinks aren’t confirmed yet.** EU accounts only for now; [US owners can help](#help-wanted-us-accounts). Built on [sk7n4k3d’s original work](#credits).
 
 A Home Assistant integration for De’Longhi bean-to-cup machines that use the *My Coffee Lounge* app, such as the **Eletta Ultra ECAM 470.85**. It replaces the app for everyday use: power, settings, status, alarms and drinks, over your home network. (Under the hood these machines run De’Longhi’s platform code-named *Daedalus*.)
 
@@ -86,7 +86,7 @@ If your router later gives the machine a new address, Home Assistant finds it ag
 | **Binary sensor** | Water tank empty, Water tank missing, Grounds container full, Out of coffee beans, Descaling needed, Water filter, Brew unit cleaning, Cleaning needed, General fault | Alarms the machine reports. On means it needs attention. |
 | **Binary sensor** | 12 technical faults (grinder, heater sensor, fan, …) | Created but switched off. Turn them on under the device’s entities if you want them. |
 | **Binary sensor** | Home network connection, Cloud connection | Whether Home Assistant is connected to the machine directly and through De’Longhi’s cloud |
-| **Button** | One per drink (Espresso, Latte Macchiato, Iced Americano, Cold Brew, …) | Makes that drink. Names and photos come from De’Longhi’s drink list for your machine. Mug versions and custom slots are created but switched off. Until the list has been read once, a few common drinks stand in. **Brewing from Home Assistant isn’t tested yet**; the drink numbers come from De’Longhi’s own list. |
+| **Button** | One per drink (Espresso, Latte Macchiato, Iced Americano, Cold Brew, …) | Makes that drink. Names and photos come from De’Longhi’s drink list for your machine. Mug versions and custom slots are created but switched off. Until the list has been read once, a few common drinks stand in. Confirmed on an Eletta Ultra: hot water (with a custom amount) and espresso (with a custom strength). Milk drinks aren’t confirmed yet. |
 
 The machine reports its status to Home Assistant directly whenever something changes, and Home Assistant also follows the copy the machine keeps in De’Longhi’s cloud, so status, settings and maintenance levels stay current even when you use the app.
 
@@ -107,7 +107,9 @@ drinks: [8, 1, 33]       # optional: only these drink numbers, in this order
 # entry_id: …            # only with more than one machine
 ```
 
-Tap a drink to see its photo and description, then **Make**. If the machine is in standby, the card offers to turn it on. Under the title are **Power** and **Brew profile**; **Settings** opens the rest: coffee temperature, auto-off, water hardness, sound, energy saving and cup warmer. Drinks and settings whose entities you’ve switched off don’t appear.
+Tap a drink to see its photo and description, then **Make**. Drinks with adjustable values (strength, coffee or water amount, milk, foam, extra shot, tea temperature, ice cubes, mug size) show those controls in the same sheet. A change is kept for that drink, so its button and automations use it too; **Use the machine’s settings** undoes it. If the machine is in standby, the card offers to turn it on. Under the title are **Power** and **Brew profile**; **Settings** opens the rest: coffee temperature, auto-off, water hardness, sound, energy saving and cup warmer. Drinks and settings whose entities you’ve switched off don’t appear.
+
+**How Home Assistant makes a drink:** it starts from De’Longhi’s values for that drink, then uses how your machine last made it for the active profile (so your own strength or tea amount carries over), then your changes from the card. The machine reports each drink, from the app, the machine or Home Assistant, so this stays current. Milk is shown as *about* so many millilitres: the machine measures milk in its own units, and the conversion uses De’Longhi’s figure for that drink.
 
 Upgrading from 0.7 or earlier: the old drink buttons keep their entity IDs, so automations keep working; their names change to the drink names. *Brew coffee* goes away on machines that don’t have that drink.
 

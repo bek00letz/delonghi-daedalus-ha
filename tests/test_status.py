@@ -361,3 +361,39 @@ async def test_filter_change_date_survives_a_reload(
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert _state(hass, "sensor", "water_filter_changed").state == "2026-11-05T08:30:00+00:00"
+
+
+async def test_filter_change_is_dated_when_its_alarm_clears(
+    hass: HomeAssistant, machine: StubLocal, stub_cloud, freezer
+) -> None:
+    """The machine sends its filter numbers only after a drink; the alarm clears at once."""
+    cloud = stub_cloud.instances[0]
+    changed = lambda: _state(hass, "sensor", "water_filter_changed").state  # noqa: E731
+    freezer.move_to("2026-11-16 08:00:00+00:00")
+    cloud.on_shadow("MachineSettings", _filter_record(2, 171))
+    machine.push(_report("Idle", 7, Filter=True))
+    await hass.async_block_till_done()
+    # Standby and wake with the alarm still on: nothing happened.
+    machine.push(_report("Standby", 0, Filter=True))
+    machine.push(_report("Idle", 7, Filter=True))
+    await hass.async_block_till_done()
+    assert changed() == "unknown"
+
+    # The new filter goes in: the alarm clears, also when relayed by the cloud.
+    freezer.move_to("2026-11-16 12:11:00+00:00")
+    cloud.on_shadow("MachineStatus", {"Status": "Idle", "CurrMode": 7, "alarms": {"Filter": False}})
+    await hass.async_block_till_done()
+    assert changed() == "2026-11-16T12:11:00+00:00"
+
+    # Hours later, after a drink, the machine's numbers reset: the same change, same date.
+    freezer.move_to("2026-11-16 18:30:00+00:00")
+    cloud.on_shadow("MachineSettings", _filter_record(3, 0))
+    await hass.async_block_till_done()
+    assert changed() == "2026-11-16T12:11:00+00:00"
+
+    # The next filter, two months on, without the alarm ever coming on: dated by the reset.
+    cloud.on_shadow("MachineSettings", _filter_record(3, 80))
+    freezer.move_to("2027-01-16 09:00:00+00:00")
+    cloud.on_shadow("MachineSettings", _filter_record(4, 0))
+    await hass.async_block_till_done()
+    assert changed() == "2027-01-16T09:00:00+00:00"

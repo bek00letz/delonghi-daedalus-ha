@@ -51,6 +51,9 @@ BREW_BLOCKING_ALARMS = (
 # A filter-used percentage that drops this much, to at most this, means a new filter.
 FILTER_RESET_DROP = 20
 FILTER_RESET_BELOW = 5
+# A reset seen this soon after the filter alarm cleared is the same change, not a new one.
+FILTER_SAME_CHANGE = timedelta(days=3)
+FILTER_ALARM = "Filter"
 
 # Settings the machine accepts at the top level of setMachineSettings, and
 # where each lives in MachineSettings.
@@ -209,7 +212,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
 
         # 0. The machine's own status report: the source of truth when it comes.
         if (status := MachineStatus.from_message(data)) is not None:
-            self.state.update_from_status(status)
+            self._apply_status(status)
             self.async_set_updated_data(self.state)
 
         # 1. Power / Standby transition report (only an OK means it happened)
@@ -276,7 +279,7 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         """A cloud record was read or changed."""
         if name == "MachineStatus" and (status := MachineStatus.from_report(reported)):
             self._ip_hint = status.reported_ip
-            self.state.update_from_status(status)
+            self._apply_status(status)
         elif name == "MachineSettings":
             self.state.settings = MachineSettings.from_report(reported)
             if self.state.settings:
@@ -445,6 +448,30 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
         changed = self.store.filter.get("changed") if self.store else None
         return dt_util.parse_datetime(changed) if changed else None
 
+    @callback
+    def _apply_status(self, status: MachineStatus) -> None:
+        """A status report, from the home network or the cloud: one place for both."""
+        self.state.update_from_status(status)
+        self._watch_filter_alarm(status)
+
+    def _watch_filter_alarm(self, status: MachineStatus) -> None:
+        """The filter alarm clearing is the moment a new filter goes in.
+
+        The machine sends its filter numbers only later (after a drink), so
+        waiting for those would date the change hours late. (Turning the
+        filter off in the machine's menu also clears the alarm; that's rare,
+        and the date is all that's recorded.)
+        """
+        if self.store is None or FILTER_ALARM not in status.alarms:
+            return
+        alarm = status.alarms[FILTER_ALARM]
+        last = self.store.filter
+        if last.get("alarm") is True and alarm is False:
+            _LOGGER.info("Water filter alarm cleared: new filter")
+            self.store.set_filter({**last, "alarm": alarm, "changed": dt_util.utcnow().isoformat()})
+        elif last.get("alarm") is not alarm:
+            self.store.set_filter({**last, "alarm": alarm})
+
     def _watch_filter(self, settings: MachineSettings) -> None:
         """Record the date when a new water filter is registered on the machine.
 
@@ -465,10 +492,11 @@ class DaedalusCoordinator(DataUpdateCoordinator[MachineState]):
                 and usage <= FILTER_RESET_BELOW
                 and last["usage"] - usage >= FILTER_RESET_DROP
             )
-            if counted or reset:
+            recent = changed and dt_util.utcnow() - dt_util.parse_datetime(changed) < FILTER_SAME_CHANGE
+            if (counted or reset) and not recent:
                 changed = dt_util.utcnow().isoformat()
                 _LOGGER.info("New water filter registered on the coffee machine")
-        self.store.set_filter({"count": count, "usage": usage, "changed": changed})
+        self.store.set_filter({**last, "count": count, "usage": usage, "changed": changed})
 
     def _saw_profile(self, profile: int) -> None:
         if profile > 0 and profile not in self.known_profiles:
